@@ -1,0 +1,4 @@
+.venv/
+audiobook_output/
+*.onnx
+__pycache__/
