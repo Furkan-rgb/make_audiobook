@@ -43,7 +43,33 @@ RE_WHITESPACE = re.compile(r"[ \t]+")
 RE_FIGS = re.compile(r"\b(fig\.|figure|table)\s*\d+[.:]*", re.IGNORECASE)
 RE_CITATIONS_PAREN = re.compile(r"\(\s*\d+\s*\)")
 RE_CITATIONS_BRACKET = re.compile(r"\[\s*\d+\s*\]")
-RE_CHAPTER_HEADER = re.compile(r"^(#{1,6})\s+(.+)", re.MULTILINE)
+
+# TOC entry patterns - matches "Chapter 1: Title", "Part I - Title", "1. Title", etc.
+RE_TOC_ENTRY = re.compile(
+    r"^\s*(?:"
+    r"(?:Chapter|Part|Section|Act|Book|Volume|Unit|Module)\s+(?:\d+|[IVXLC]+)[:\.\-\s]+|"  # Chapter 1:, Part I -
+    r"(?:\d+(?:\.\d+)*)[:\.\-\s]+"  # 1., 1.1, 1.1.1
+    r")(.+)",
+    re.IGNORECASE,
+)
+
+# Standard book sections (always treated as chapter headers)
+STANDARD_SECTIONS = {
+    "introduction",
+    "preface",
+    "prologue",
+    "epilogue",
+    "conclusion",
+    "afterword",
+    "foreword",
+    "acknowledgements",
+    "acknowledgments",
+    "bibliography",
+    "references",
+    "glossary",
+    "index",
+    "appendix",
+}
 
 
 def verify_dependencies():
@@ -82,37 +108,116 @@ def clean_text_segment(text):
 
 
 def parse_pdf_to_chapters(pdf_path):
+    """
+    Parse PDF into chapters using TOC-based detection.
+    If no TOC is found, returns the entire book as a single chapter.
+    """
     print(f"📖 Parsing PDF structure: {pdf_path}...")
     if not os.path.exists(pdf_path):
         print(f"❌ File not found: {pdf_path}")
         sys.exit(1)
 
     md_text = pymupdf4llm.to_markdown(pdf_path, page_chunks=False, margins=(50, 50, 50, 50))
-
-    chapters = []
     lines = md_text.split("\n")
-    current_title = "Intro / Front Matter"
-    current_buffer = []
+
+    # Minimum content length to consider a chapter valid
+    MIN_CHAPTER_CONTENT = 500
+
+    def normalize_title(title):
+        """Normalize title for comparison (lowercase, collapsed whitespace)."""
+        return " ".join(title.lower().split())
+
+    def clean_toc_title(title):
+        """Clean up a TOC title by removing page numbers and dots."""
+        title = re.sub(r"\s*\.{2,}\s*\d+\s*$", "", title)  # Remove "... 123"
+        title = re.sub(r"\s+\d+\s*$", "", title)  # Remove trailing page numbers
+        return title.strip()
+
+    # --- Step 1: Extract chapter titles from TOC ---
+    # Look for lines matching TOC patterns: "Chapter 1: Title", "Part I - Title", "1. Title"
+    toc_entries = []  # List of (original_line, normalized_title)
 
     for line in lines:
-        match = RE_CHAPTER_HEADER.match(line)
+        stripped = line.strip()
+
+        # Check for TOC entry patterns
+        match = RE_TOC_ENTRY.match(stripped)
         if match:
+            title = clean_toc_title(match.group(1))
+            if 3 < len(title) < 100:
+                toc_entries.append((stripped, normalize_title(title)))
+
+        # Also check for standard sections
+        if stripped.lower() in STANDARD_SECTIONS:
+            toc_entries.append((stripped, normalize_title(stripped)))
+
+    # Deduplicate TOC entries (keep first occurrence)
+    seen = set()
+    unique_toc = []
+    for original, normalized in toc_entries:
+        if normalized not in seen:
+            seen.add(normalized)
+            unique_toc.append((original, normalized))
+
+    # --- Step 2: Check if we have a valid TOC ---
+    if len(unique_toc) < 3:
+        # No meaningful TOC found - return entire book as single chapter
+        print("📑 No TOC detected. Treating as single chapter.")
+        clean_content = clean_text_segment(md_text)
+        # Try to extract title from first markdown header or first line
+        title = "Audiobook"
+        for line in lines[:50]:
+            if line.startswith("# "):
+                title = line[2:].strip()
+                break
+            elif line.strip() and len(line.strip()) < 100:
+                title = line.strip()
+                break
+        return [(title, clean_content)]
+
+    print(f"📑 Found {len(unique_toc)} chapters in TOC.")
+
+    # --- Step 3: Find chapter boundaries in content ---
+    # For each TOC title, find where it appears in the content (as a standalone line)
+    toc_titles = {norm: orig for orig, norm in unique_toc}
+
+    chapters = []
+    current_title = "Front Matter"
+    current_buffer = []
+    seen_titles = set()
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        norm_line = normalize_title(stripped)
+
+        # Check if this line matches a TOC title
+        is_chapter_start = norm_line in toc_titles
+
+        # Also check for standard sections
+        if stripped.lower() in STANDARD_SECTIONS:
+            is_chapter_start = True
+
+        if is_chapter_start and norm_line not in seen_titles:
+            # Save previous chapter if it has content
             if current_buffer:
                 clean_content = clean_text_segment("\n".join(current_buffer))
-                if len(clean_content) > 50:
+                if len(clean_content) >= MIN_CHAPTER_CONTENT:
                     chapters.append((current_title, clean_content))
 
-            current_title = match.group(2).strip()
+            # Start new chapter
+            current_title = stripped
             current_buffer = []
+            seen_titles.add(norm_line)
         else:
             current_buffer.append(line)
 
+    # Handle last chapter
     if current_buffer:
         clean_content = clean_text_segment("\n".join(current_buffer))
-        if len(clean_content) > 50:
+        if len(clean_content) >= MIN_CHAPTER_CONTENT:
             chapters.append((current_title, clean_content))
 
-    print(f"📑 Found {len(chapters)} sections.")
+    print(f"📑 Extracted {len(chapters)} chapters with content.")
     return chapters
 
 
@@ -275,16 +380,16 @@ def run_audiobook_gen():
         "-safe",
         "0",
         "-i",
-        file_list_path,
+        "files.txt",
         "-i",
-        metadata_path,
+        "metadata.txt",
         "-map_metadata",
         "1",
         "-c:a",
         "aac",  # Use 'libmp3lame' here if you strictly want MP3
         "-b:a",
         "64k",  # Bitrate
-        final_output,
+        os.path.abspath(final_output),
     ]
 
     try:
