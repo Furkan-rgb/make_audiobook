@@ -13,18 +13,6 @@ The script extracts the text from a PDF, detects chapters from its table of cont
 - **GPU acceleration** — uses CUDA automatically when an ONNX Runtime GPU provider is available, otherwise runs on CPU.
 - **Preview mode** — render just the first couple of chapters to test voice and settings before committing to a full run.
 
-## Technical highlights
-
-A few of the engineering decisions behind the pipeline:
-
-- **TOC-driven chapter segmentation with graceful fallback** — chapters are detected in two passes: first the table of contents is mined for headings via a set of compiled regexes that cover `Chapter 1:`, `Part IV -`, and numbered (`1.2.3`) styles, plus a whitelist of standard book sections (Introduction, Bibliography, …). Those titles are then matched back against the body to find chapter boundaries. If fewer than three headings are found, the book is treated as a single chapter instead of failing — the tool degrades rather than breaks on PDFs without a clean TOC.
-- **Robust text normalization for speech** — extracted markdown is run through a pipeline of precompiled regexes that strip artifacts that sound wrong when read aloud: inline citations (`[12]`, `(3)`), figure/table references, page numbers, markdown emphasis/links/images, and hyphenated line-break splits. Titles are de-duplicated by a normalized (lowercased, whitespace-collapsed) key so repeated headings don't create phantom chapters.
-- **Character-budgeted sentence batching** — text is sentence-tokenized with NLTK and greedily packed into batches under a configurable character budget (`MAX_BATCH_CHARS`) before being sent to the TTS model. This keeps each synthesis call within the model's comfortable input range while minimizing the number of calls; over-long single sentences are flushed as their own batch instead of being dropped or truncated.
-- **Streaming audio writes for flat memory use** — audio is written incrementally to disk per chapter via `soundfile.SoundFile`, so memory stays constant regardless of book length rather than accumulating hours of PCM in RAM. Pre-allocated NumPy silence buffers are reused to insert sentence/paragraph pauses without re-allocating.
-- **Accurate chapter markers without re-reading audio** — chapter durations are measured from the written WAVs (`soundfile.info`) and accumulated into millisecond `START`/`END` offsets, which are emitted as an FFmetadata file. FFmpeg then concatenates the per-chapter WAVs and muxes the metadata in a single pass, producing a seekable `.m4b` with a real chapter list.
-- **Hardware-aware execution** — ONNX Runtime providers are probed at startup so the model transparently uses CUDA when available and falls back to CPU otherwise; large model assets are fetched on demand on first run.
-- **Fail-fast dependency checks** — required external tooling (FFmpeg) and NLTK data are verified up front, so the run aborts with a clear message before spending time on synthesis rather than crashing at the merge step.
-
 ## Requirements
 
 - **Python 3.9+**
