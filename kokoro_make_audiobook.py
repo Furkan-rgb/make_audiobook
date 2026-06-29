@@ -13,9 +13,9 @@ import soundfile as sf
 from tqdm import tqdm
 
 # --- CONFIGURATION ---
-PDF_PATH = "reparative-therapy-nicolosipdf.pdf"
+PDF_PATH = "book.pdf"
 OUTPUT_FOLDER = "audiobook_output"
-OUTPUT_FILENAME = "reparative_therapy_complete.m4b"  # .m4b is best for chapters
+OUTPUT_FILENAME = "audiobook.m4b"  # .m4b is best for chapters
 
 # Voice: am_michael, af_bella, etc.
 VOICE_NAME = "am_michael"

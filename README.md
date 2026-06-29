@@ -33,14 +33,14 @@ The Kokoro ONNX model (`kokoro-v1.0.onnx`) and the voices file (`voices-v1.0.bin
 2. Open `kokoro_make_audiobook.py` and edit the configuration block near the top:
 
    ```python
-   PDF_PATH = "reparative-therapy-nicolosipdf.pdf"   # your input PDF
+   PDF_PATH = "book.pdf"            # your input PDF
    OUTPUT_FOLDER = "audiobook_output"
-   OUTPUT_FILENAME = "reparative_therapy_complete.m4b"
+   OUTPUT_FILENAME = "audiobook.m4b"
 
-   VOICE_NAME = "am_michael"   # e.g. am_michael, af_bella
-   SPEED = 1.1                 # narration speed multiplier
+   VOICE_NAME = "am_michael"        # e.g. am_michael, af_bella
+   SPEED = 1.1                      # narration speed multiplier
 
-   PREVIEW_MODE = False        # True = render only the first few chapters
+   PREVIEW_MODE = False             # True = render only the first few chapters
    PREVIEW_CHAPTERS_LIMIT = 2
    ```
 
@@ -56,9 +56,9 @@ The finished audiobook is written to `audiobook_output/<OUTPUT_FILENAME>`.
 
 | Setting | Description | Default |
 | --- | --- | --- |
-| `PDF_PATH` | Path to the input PDF | `reparative-therapy-nicolosipdf.pdf` |
+| `PDF_PATH` | Path to the input PDF | `book.pdf` |
 | `OUTPUT_FOLDER` | Directory for the output and temporary files | `audiobook_output` |
-| `OUTPUT_FILENAME` | Name of the final audiobook (`.m4b` recommended for chapters) | `reparative_therapy_complete.m4b` |
+| `OUTPUT_FILENAME` | Name of the final audiobook (`.m4b` recommended for chapters) | `audiobook.m4b` |
 | `VOICE_NAME` | Kokoro voice to narrate with | `am_michael` |
 | `SPEED` | Narration speed multiplier | `1.1` |
 | `PREVIEW_MODE` | Render only the first `PREVIEW_CHAPTERS_LIMIT` chapters | `False` |
@@ -85,12 +85,12 @@ make_audiobook/
 ├── kokoro_make_audiobook.py   # the full pipeline
 ├── requirements.txt           # Python dependencies
 ├── voices-v1.0.bin            # Kokoro voices (auto-downloaded if missing)
-└── reparative-therapy-nicolosipdf.pdf   # example input PDF
+└── book.pdf                   # your input PDF (git-ignored; provide your own)
 ```
 
 ## Notes
 
-- The model file (`*.onnx`) and the `audiobook_output/` directory are git-ignored.
+- Input PDFs (`*.pdf`), the model file (`*.onnx`), and the `audiobook_output/` directory are git-ignored, so your source material and generated files stay out of version control.
 - Generation is CPU/GPU intensive and can take a while for full-length books — use `PREVIEW_MODE` to dial in voice and speed first.
 
 ## Acknowledgements
