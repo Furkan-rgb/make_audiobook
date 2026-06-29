@@ -2,21 +2,21 @@
 
 Turn a PDF book into a chapterized `.m4b` audiobook using the [Kokoro](https://github.com/thewh1teagle/kokoro-onnx) neural text-to-speech model.
 
-The script extracts the text from a PDF, detects chapters from its table of contents, narrates each chapter with Kokoro, and stitches everything into a single audiobook file with embedded chapter markers — so players can jump between chapters.
+The script extracts the text from a PDF, detects chapters from its table of contents, narrates each chapter with Kokoro, and stitches everything into a single audiobook file with embedded chapter markers, so players can jump between chapters.
 
 ## Features
 
-- **PDF → speech** — extracts text with [`pymupdf4llm`](https://pypi.org/project/pymupdf4llm/) and cleans up markdown artifacts, page numbers, citations, figure/table references, and hyphenated line breaks before narration.
-- **Automatic chapter detection** — parses the table of contents (e.g. `Chapter 1: ...`, `Part I - ...`, `1.2 ...`) plus standard sections (Introduction, Preface, Bibliography, etc.). Falls back to a single chapter when no usable TOC is found.
-- **Chapter markers in the output** — generates an FFmetadata file so the final `.m4b` has navigable chapters.
-- **Natural pacing** — inserts short pauses between sentences and paragraphs.
-- **GPU acceleration** — uses CUDA automatically when an ONNX Runtime GPU provider is available, otherwise runs on CPU.
-- **Preview mode** — render just the first couple of chapters to test voice and settings before committing to a full run.
+- **PDF to speech**: extracts text with [`pymupdf4llm`](https://pypi.org/project/pymupdf4llm/) and cleans up markdown artifacts, page numbers, citations, figure/table references, and hyphenated line breaks before narration.
+- **Automatic chapter detection**: parses the table of contents (e.g. `Chapter 1: ...`, `Part I - ...`, `1.2 ...`) plus standard sections (Introduction, Preface, Bibliography, etc.). Falls back to a single chapter when no usable TOC is found.
+- **Chapter markers in the output**: generates an FFmetadata file so the final `.m4b` has navigable chapters.
+- **Natural pacing**: inserts short pauses between sentences and paragraphs.
+- **GPU acceleration**: uses CUDA automatically when an ONNX Runtime GPU provider is available, otherwise runs on CPU.
+- **Preview mode**: render just the first couple of chapters to test voice and settings before committing to a full run.
 
 ## Requirements
 
 - **Python 3.9+**
-- **[FFmpeg](https://ffmpeg.org/)** — must be installed and on your `PATH` (used to merge audio and embed chapters). The script exits with an error if it isn't found.
+- **[FFmpeg](https://ffmpeg.org/)**: must be installed and on your `PATH` (used to merge audio and embed chapters). The script exits with an error if it isn't found.
 - Python packages from `requirements.txt`:
 
 ```bash
@@ -72,11 +72,11 @@ To change the output to MP3 instead of `.m4b`/AAC, swap the FFmpeg encoder in th
 
 ## How it works
 
-1. **Verify dependencies** — checks for FFmpeg and downloads NLTK tokenizer data if needed.
-2. **Parse the PDF** (`parse_pdf_to_chapters`) — converts the PDF to markdown, detects chapter titles from the TOC, splits the body into chapters, and cleans each chapter's text.
-3. **Batch & narrate** — splits chapters into sentence batches (capped at `MAX_BATCH_CHARS`) and synthesizes each batch with Kokoro, writing one WAV per chapter and tracking chapter durations.
-4. **Build metadata** (`create_ffmpeg_metadata`) — writes an FFmetadata file with `START`/`END` timestamps per chapter.
-5. **Merge** — FFmpeg concatenates the per-chapter WAVs, encodes to AAC at 64 kbps (good for speech), and embeds the chapter metadata into the final file. Temporary files are cleaned up on success.
+1. **Verify dependencies**: checks for FFmpeg and downloads NLTK tokenizer data if needed.
+2. **Parse the PDF** (`parse_pdf_to_chapters`): converts the PDF to markdown, detects chapter titles from the TOC, splits the body into chapters, and cleans each chapter's text.
+3. **Batch and narrate**: splits chapters into sentence batches (capped at `MAX_BATCH_CHARS`) and synthesizes each batch with Kokoro, writing one WAV per chapter and tracking chapter durations.
+4. **Build metadata** (`create_ffmpeg_metadata`): writes an FFmetadata file with `START`/`END` timestamps per chapter.
+5. **Merge**: FFmpeg concatenates the per-chapter WAVs, encodes to AAC at 64 kbps (good for speech), and embeds the chapter metadata into the final file. Temporary files are cleaned up on success.
 
 ## Project structure
 
@@ -91,7 +91,7 @@ make_audiobook/
 ## Notes
 
 - Input PDFs (`*.pdf`), the model file (`*.onnx`), and the `audiobook_output/` directory are git-ignored, so your source material and generated files stay out of version control.
-- Generation is CPU/GPU intensive and can take a while for full-length books — use `PREVIEW_MODE` to dial in voice and speed first.
+- Generation is CPU/GPU intensive and can take a while for full-length books, so use `PREVIEW_MODE` to dial in voice and speed first.
 
 ## Acknowledgements
 
