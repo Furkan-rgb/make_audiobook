@@ -18,10 +18,10 @@ from tqdm import tqdm
 
 
 # --- BOOK CONFIGURATION ---
-PDF_PATH = Path("reparative-therapy-nicolosipdf.pdf")
+PDF_PATH = Path("book.pdf")
 OUTPUT_FOLDER = Path("audiobook_output")
-OUTPUT_FILENAME = "reparative_therapy_complete.m4b"
-PREVIEW_OUTPUT_FILENAME = "reparative_therapy_preview.m4b"
+OUTPUT_FILENAME = "audiobook.m4b"
+PREVIEW_OUTPUT_FILENAME = "audiobook_preview.m4b"
 
 # --- QWEN CONFIGURATION ---
 TTS_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"

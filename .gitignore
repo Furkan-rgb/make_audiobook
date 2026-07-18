@@ -1,4 +1,6 @@
 .venv/
 audiobook_output/
 models/
+*.onnx
+*.pdf
 __pycache__/
