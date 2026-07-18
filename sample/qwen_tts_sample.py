@@ -7,8 +7,8 @@ import soundfile as sf
 import torch
 from qwen_tts import Qwen3TTSModel
 
-from make_audiobook import (
-    LOCAL_MODEL_PATH,
+from audiobook_config import (
+    LOCAL_TTS_MODEL_PATH,
     NARRATION_INSTRUCTION,
     TTS_MODEL,
     VOICE_NAME,
@@ -34,11 +34,13 @@ def parse_args():
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("audiobook_output/voice_samples"),
+        default=Path("sample/voice_samples"),
     )
     parser.add_argument(
         "--model",
-        default=str(LOCAL_MODEL_PATH if LOCAL_MODEL_PATH.exists() else TTS_MODEL),
+        default=str(
+            LOCAL_TTS_MODEL_PATH if LOCAL_TTS_MODEL_PATH.exists() else TTS_MODEL
+        ),
         help="A Hugging Face model id or downloaded model directory.",
     )
     return parser.parse_args()
