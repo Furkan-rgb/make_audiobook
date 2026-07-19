@@ -65,6 +65,12 @@ def verify_supported_voice(model: Any, voice_name: str = VOICE_NAME) -> None:
         raise RuntimeError(f"{voice_name} is not supported by the selected model.")
 
 
+def _as_mono_float32(wav: Any) -> np.ndarray:
+    """Coerce a decoded Qwen waveform into a flat float32 mono array."""
+
+    return np.asarray(wav, dtype=np.float32).reshape(-1)
+
+
 def generate_chunk(
     model: Any,
     chunk: NarrationChunkLike,
@@ -85,13 +91,77 @@ def generate_chunk(
         speaker=voice_name,
         instruct=instruction,
     )
-    audio = np.asarray(wavs[0], dtype=np.float32).reshape(-1)
-    return audio, int(sample_rate)
+    return _as_mono_float32(wavs[0]), int(sample_rate)
+
+
+def design_reference_clip(
+    design_model: Any,
+    *,
+    ref_text: str,
+    instruct: str,
+    language: str = LANGUAGE,
+) -> tuple[np.ndarray, int]:
+    """Render a reference clip with the VoiceDesign model from a persona string.
+
+    The returned audio is meant to be handed to :func:`build_voice_clone_prompt`
+    so the designed persona can be reused as a stable cloned narrator.
+    """
+
+    wavs, sample_rate = design_model.generate_voice_design(
+        text=ref_text,
+        language=language,
+        instruct=instruct,
+    )
+    return _as_mono_float32(wavs[0]), int(sample_rate)
+
+
+def build_voice_clone_prompt(
+    clone_model: Any,
+    *,
+    ref_audio: np.ndarray,
+    sample_rate: int,
+    ref_text: str,
+) -> Any:
+    """Precompute a reusable clone prompt from a reference clip.
+
+    Building the prompt once and passing it to every :func:`generate_clone_chunk`
+    call keeps the narrator identical across the whole book and avoids
+    re-extracting reference features for each chunk.
+    """
+
+    return clone_model.create_voice_clone_prompt(
+        ref_audio=(ref_audio, int(sample_rate)),
+        ref_text=ref_text,
+    )
+
+
+def generate_clone_chunk(
+    clone_model: Any,
+    chunk: NarrationChunkLike,
+    *,
+    voice_clone_prompt: Any,
+    language: str = LANGUAGE,
+) -> tuple[np.ndarray, int]:
+    """Generate one narration chunk by cloning a prepared reference voice.
+
+    Delivery and prosody are carried by ``voice_clone_prompt`` (built from the
+    reference clip), so no per-chunk style instruction is supplied.
+    """
+
+    wavs, sample_rate = clone_model.generate_voice_clone(
+        text=chunk.text,
+        language=language,
+        voice_clone_prompt=voice_clone_prompt,
+    )
+    return _as_mono_float32(wavs[0]), int(sample_rate)
 
 
 __all__ = [
     "NarrationChunkLike",
+    "build_voice_clone_prompt",
+    "design_reference_clip",
     "generate_chunk",
+    "generate_clone_chunk",
     "load_qwen_model",
     "verify_supported_voice",
     "verify_tts_dependencies",

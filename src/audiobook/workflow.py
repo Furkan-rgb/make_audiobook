@@ -8,7 +8,7 @@ import re
 import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 from tqdm import tqdm
@@ -24,13 +24,23 @@ from .config import (
     DEFAULT_PREPARED_MARKDOWN_FILENAME,
     DEFAULT_PREPARED_SCRIPT_FILENAME,
     DEFAULT_PREVIEW_OUTPUT_FILENAME,
+    ACTIVE_VOICE,
+    LANGUAGE,
+    LOCAL_VOICE_CLONE_MODEL_PATH,
     NARRATION_INSTRUCTION,
     TARGET_CHUNK_DURATION_SECONDS,
+    TTS_BACKEND,
+    VOICE_CLONE_MODEL,
     VOICE_NAME,
+    VOICE_REFERENCE_AUDIO_FILENAME,
+    VOICE_REFERENCE_METADATA_FILENAME,
+    VOICES_DIR,
 )
 from .extraction.pdf import parse_pdf_to_chapters
 from .synthesis.qwen import (
+    build_voice_clone_prompt,
     generate_chunk,
+    generate_clone_chunk,
     load_qwen_model,
     verify_supported_voice,
     verify_tts_dependencies,
@@ -223,6 +233,83 @@ def narration_chapters(book: Any) -> list[tuple[str, str]]:
     ]
 
 
+@dataclass(frozen=True)
+class _Narrator:
+    """A loaded TTS voice and the metadata recorded for a narration run."""
+
+    label: str
+    model_path: str
+    instruction: str | None
+    generate: Callable[[Any], tuple[np.ndarray, int]]
+
+
+def _load_clone_narrator() -> _Narrator:
+    """Load the Base clone model and lock in the committed reference voice."""
+
+    import soundfile as sf
+
+    voice_dir = VOICES_DIR / ACTIVE_VOICE
+    audio_path = voice_dir / VOICE_REFERENCE_AUDIO_FILENAME
+    metadata_path = voice_dir / VOICE_REFERENCE_METADATA_FILENAME
+    if not audio_path.exists() or not metadata_path.exists():
+        raise RuntimeError(
+            f"Active voice {ACTIVE_VOICE!r} not found in {voice_dir}. Create it "
+            f"with 'python design_voice.py {ACTIVE_VOICE}' before narrating with "
+            "TTS_BACKEND='voice_clone'."
+        )
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    ref_text = metadata["ref_text"]
+    ref_audio, sample_rate = sf.read(audio_path)
+    ref_audio = np.asarray(ref_audio, dtype=np.float32).reshape(-1)
+
+    model_path = str(
+        LOCAL_VOICE_CLONE_MODEL_PATH
+        if LOCAL_VOICE_CLONE_MODEL_PATH.exists()
+        else VOICE_CLONE_MODEL
+    )
+    model = load_qwen_model(model_path)
+    # Encode the reference once; every chunk reuses it for a stable narrator.
+    prompt = build_voice_clone_prompt(
+        model,
+        ref_audio=ref_audio,
+        sample_rate=int(sample_rate),
+        ref_text=ref_text,
+    )
+    label = metadata.get("slug", "voice_clone")
+    return _Narrator(
+        label=label,
+        model_path=model_path,
+        instruction=metadata.get("instruct"),
+        generate=lambda chunk: generate_clone_chunk(
+            model, chunk, voice_clone_prompt=prompt, language=LANGUAGE
+        ),
+    )
+
+
+def _load_narrator(tts_model: str) -> _Narrator:
+    """Build the narrator selected by ``TTS_BACKEND``.
+
+    ``tts_model`` is the CustomVoice checkpoint requested on the command line; it
+    is used only by the built-in-speaker backend. The clone backend loads the
+    Base checkpoint and the committed reference clip instead.
+    """
+
+    verify_tts_dependencies()
+    if TTS_BACKEND == "voice_clone":
+        return _load_clone_narrator()
+    if TTS_BACKEND != "custom_voice":
+        raise ValueError(f"Unknown TTS_BACKEND: {TTS_BACKEND!r}")
+    model = load_qwen_model(tts_model)
+    verify_supported_voice(model)
+    return _Narrator(
+        label=VOICE_NAME,
+        model_path=tts_model,
+        instruction=NARRATION_INSTRUCTION,
+        generate=lambda chunk: generate_chunk(model, chunk),
+    )
+
+
 def narrate_chapters(
     chapters: Sequence[tuple[str, str]],
     options: NarrationWorkflowOptions,
@@ -246,9 +333,7 @@ def narrate_chapters(
         return None
 
     verify_audio_dependencies()
-    verify_tts_dependencies()
-    model = load_qwen_model(options.tts_model)
-    verify_supported_voice(model)
+    narrator = _load_narrator(options.tts_model)
 
     temp_dir = options.output_dir / "temp_parts"
     if temp_dir.exists():
@@ -263,13 +348,13 @@ def narrate_chapters(
     sample_rate: int | None = None
 
     total_chunks = sum(len(chunks) for _, chunks in plan)
-    print(f"Generating {total_chunks} chunks with {VOICE_NAME}...")
+    print(f"Generating {total_chunks} chunks with {narrator.label}...")
     for chapter_index, (title, chunks) in enumerate(plan):
         audio_segments: list[np.ndarray] = []
         for chapter_chunk_index, chunk in enumerate(
             tqdm(chunks, desc=title, leave=False, unit="chunk")
         ):
-            audio, generated_rate = generate_chunk(model, chunk)
+            audio, generated_rate = narrator.generate(chunk)
             if sample_rate is None:
                 sample_rate = generated_rate
             elif generated_rate != sample_rate:
@@ -312,9 +397,10 @@ def narrate_chapters(
     with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump(
             {
-                "tts_model": options.tts_model,
-                "voice": VOICE_NAME,
-                "instruction": NARRATION_INSTRUCTION,
+                "tts_backend": TTS_BACKEND,
+                "tts_model": narrator.model_path,
+                "voice": narrator.label,
+                "instruction": narrator.instruction,
                 "prepared_script": _preparation_manifest(prepared_book, script_path),
                 "chunks": manifest,
             },

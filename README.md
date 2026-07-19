@@ -1,9 +1,10 @@
 # Modular audiobook workflow
 
 Convert a PDF into a prepared narration script, review it, and then generate a
-chaptered `.m4b` audiobook with
-[`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice)
-and the calm Aiden voice.
+chaptered `.m4b` audiobook with Qwen3-TTS. The narrator can be a built-in
+speaker or a bespoke voice you design yourself (see
+[Custom narrator voice](#custom-narrator-voice)); runs default to the
+designed `warm_male` voice.
 
 The workflow deliberately separates editorial preparation from speech
 generation:
@@ -187,6 +188,36 @@ as `all`:
 .venv/bin/python make_audiobook.py --pdf book.pdf
 ```
 
+## Custom narrator voice
+
+The narrator is chosen by `TTS_BACKEND` in `src/audiobook/config.py`:
+
+- `custom_voice` — a built-in Qwen3-TTS speaker named by `VOICE_NAME`
+  (Aiden, Ryan, Serena, …) on the CustomVoice checkpoint.
+- `voice_clone` — a bespoke narrator built with the **design-then-clone**
+  pipeline. The VoiceDesign model renders one reference clip from a
+  natural-language description, and every book chunk is cloned from that clip so
+  the voice stays perfectly consistent across the whole book. `ACTIVE_VOICE`
+  selects which designed voice to use.
+
+Designed voices live in `voices/<name>/` (a `reference.wav` plus its
+`reference.json` recipe). This repo ships `warm_male`. To create your own:
+
+```bash
+# 1. design a voice from a description -> voices/gentle_reader/
+.venv/bin/python design_voice.py gentle_reader \
+  --instruct "A soft-spoken female narrator in her thirties, warm and unhurried, neutral American accent."
+
+# 2. hear it on sample passages -> voices/gentle_reader/previews/
+.venv/bin/python clone_voice.py gentle_reader
+
+# 3. once happy, set ACTIVE_VOICE = "gentle_reader" in src/audiobook/config.py
+```
+
+Both steps need the VoiceDesign and Base checkpoints
+(`Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` and `-Base`), which download
+automatically on first use or can be fetched with `hf download`.
+
 ## Semantic TTS chunking
 
 Prepared text follows this hierarchy:
@@ -227,12 +258,15 @@ src/audiobook/
 ├── chunking/
 │   └── semantic.py               # coherent TTS request construction
 ├── synthesis/
-│   └── qwen.py                   # Qwen3-TTS/Aiden inference
+│   └── qwen.py                   # Qwen3-TTS custom-voice and clone inference
 └── assembly/
     └── audio.py                  # crossfades, WAVs, and M4B output
 
+design_voice.py                   # design a narrator voice from a description
+clone_voice.py                    # preview a designed voice on sample text
+voices/<name>/                    # reference.wav + reference.json per voice
 make_audiobook.py                 # legacy compatibility launcher
-sample/qwen_tts_sample.py         # short voice sample generator
+sample/qwen_tts_sample.py         # short built-in-speaker sample generator
 tests/                            # focused module and workflow tests
 ```
 

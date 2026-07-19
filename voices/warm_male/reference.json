@@ -1,0 +1,7 @@
+{
+  "slug": "warm_male",
+  "instruct": "A warm, middle-aged male audiobook narrator with a resonant, unhurried voice and quiet gravitas. Neutral American accent. Calm, measured, and authoritative, like a seasoned professional reader of serious non-fiction.",
+  "ref_text": "By morning, the decision no longer seemed complicated. The house was silent, and pale light crossed the hallway floor as he considered what the day would ask of him.",
+  "sample_rate": 24000,
+  "design_model": "models/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+}
