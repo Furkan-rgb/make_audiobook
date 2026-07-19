@@ -1,0 +1,7 @@
+{
+  "slug": "self",
+  "instruct": null,
+  "ref_text": "The distinction matters more than it first appears. What separates the two cases is not scale, or cost, or even timing, but who is left to absorb the consequences. Once that question is asked plainly, the earlier arguments begin to look like descriptions of the same problem.",
+  "sample_rate": 24000,
+  "design_model": "recorded (voices/Self.flac, mono 24k, highpass 70Hz + loudnorm)"
+}

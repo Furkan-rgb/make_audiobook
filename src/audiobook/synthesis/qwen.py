@@ -120,18 +120,23 @@ def build_voice_clone_prompt(
     *,
     ref_audio: np.ndarray,
     sample_rate: int,
-    ref_text: str,
+    ref_text: str | None = None,
 ) -> Any:
     """Precompute a reusable clone prompt from a reference clip.
 
     Building the prompt once and passing it to every :func:`generate_clone_chunk`
     call keeps the narrator identical across the whole book and avoids
     re-extracting reference features for each chunk.
+
+    With *ref_text* the model runs in-context and carries both timbre and the
+    reference's prosody.  Without it only the speaker embedding is available, so
+    the clone keeps the voice's identity but reads with its own delivery.
     """
 
     return clone_model.create_voice_clone_prompt(
         ref_audio=(ref_audio, int(sample_rate)),
         ref_text=ref_text,
+        x_vector_only_mode=not ref_text,
     )
 
 

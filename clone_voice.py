@@ -1,16 +1,17 @@
-"""Preview a designed voice by cloning sample narration with it.
+"""Preview a narrator voice by cloning sample narration with it.
 
-Loads ``voices/<name>/reference.wav``, builds a reusable clone prompt with the
-Qwen3-TTS Base model, and reads one or more passages so you can hear the voice
-exactly as a book run would render it. Clips are written to
-``voices/<name>/previews/``.
+The voice can be a designed voice folder or any audio file — point at a
+recording and it is decoded, levelled and cloned as-is. Supplying the
+recording's transcript upgrades the clone from timbre-only to timbre plus
+prosody; without one it still sounds like the speaker, but reads in the model's
+own cadence. Clips are written next to the reference.
 
-    python clone_voice.py warm_male
-    python clone_voice.py warm_male --text "Any sentence you want to hear."
+    python clone_voice.py voices/Self.flac
+    python clone_voice.py voices/Self.flac --ref-text "What I actually said."
+    python clone_voice.py warm_male_v2 --text "Any sentence you want to hear."
 """
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -23,14 +24,14 @@ import torch
 from qwen_tts import Qwen3TTSModel
 
 from audiobook.config import (
+    ACTIVE_VOICE,
     LANGUAGE,
     LOCAL_VOICE_CLONE_MODEL_PATH,
     VOICE_CLONE_MODEL,
-    VOICE_REFERENCE_AUDIO_FILENAME,
-    VOICE_REFERENCE_METADATA_FILENAME,
     VOICES_DIR,
 )
 from audiobook.synthesis.qwen import build_voice_clone_prompt
+from audiobook.synthesis.voices import describe, resolve_voice
 
 DEFAULT_PASSAGES = [
     "By morning, the decision no longer seemed complicated. The house was "
@@ -45,7 +46,17 @@ DEFAULT_PASSAGES = [
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "name", help="Voice name under voices/ (e.g. warm_male)."
+        "voice",
+        nargs="?",
+        default=ACTIVE_VOICE,
+        help="Designed voice name (warm_male_v2) or audio file "
+        "(voices/Self.flac). Defaults to ACTIVE_VOICE.",
+    )
+    parser.add_argument(
+        "--ref-text",
+        help="Transcript of the reference audio, word for word. Carries the "
+        "reference's prosody into the clone. Read from a sidecar <stem>.txt "
+        "when present; omit entirely to clone timbre only.",
     )
     parser.add_argument(
         "--text",
@@ -65,23 +76,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def preview_dir_for(voice) -> Path:
+    """Put previews under the voice folder, or beside a standalone recording."""
+
+    if voice.source.name == "reference.wav":
+        return voice.source.parent / "previews"
+    return voice.source.parent / f"{voice.source.stem}_previews"
+
+
 def main() -> None:
     args = parse_args()
     if not torch.cuda.is_available():
         raise SystemExit("Voice cloning requires a CUDA GPU.")
 
-    voice_dir = args.voices_dir / args.name
-    audio_path = voice_dir / VOICE_REFERENCE_AUDIO_FILENAME
-    metadata_path = voice_dir / VOICE_REFERENCE_METADATA_FILENAME
-    if not audio_path.exists() or not metadata_path.exists():
-        raise SystemExit(
-            f"No voice named '{args.name}' in {voice_dir}. Create it first with "
-            f"'python design_voice.py {args.name}'."
+    try:
+        voice = resolve_voice(
+            args.voice, voices_dir=args.voices_dir, ref_text=args.ref_text
         )
-
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    ref_text = metadata["ref_text"]
-    ref_audio, sample_rate = sf.read(audio_path)
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(describe(voice))
 
     print(f"Loading {args.model} on {torch.cuda.get_device_name(0)}...")
     model = Qwen3TTSModel.from_pretrained(
@@ -89,12 +103,12 @@ def main() -> None:
     )
     prompt = build_voice_clone_prompt(
         model,
-        ref_audio=ref_audio,
-        sample_rate=int(sample_rate),
-        ref_text=ref_text,
+        ref_audio=voice.audio,
+        sample_rate=voice.sample_rate,
+        ref_text=voice.ref_text,
     )
 
-    preview_dir = voice_dir / "previews"
+    preview_dir = preview_dir_for(voice)
     preview_dir.mkdir(parents=True, exist_ok=True)
     passages = args.texts or DEFAULT_PASSAGES
     for index, passage in enumerate(passages, start=1):
@@ -108,7 +122,7 @@ def main() -> None:
         sf.write(out_path, wavs[0], clone_rate)
         print(f"  wrote {out_path}")
 
-    print(f"\nPreviews for '{args.name}' are in {preview_dir}")
+    print(f"\nPreviews for '{voice.slug}' are in {preview_dir}")
 
 
 if __name__ == "__main__":

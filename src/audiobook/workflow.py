@@ -32,8 +32,6 @@ from .config import (
     TTS_BACKEND,
     VOICE_CLONE_MODEL,
     VOICE_NAME,
-    VOICE_REFERENCE_AUDIO_FILENAME,
-    VOICE_REFERENCE_METADATA_FILENAME,
     VOICES_DIR,
 )
 from .extraction.pdf import parse_pdf_to_chapters
@@ -45,6 +43,7 @@ from .synthesis.qwen import (
     verify_supported_voice,
     verify_tts_dependencies,
 )
+from .synthesis.voices import describe, resolve_voice
 from .chunking.semantic import NarrationChunk, build_chunk_plan, display_chunk_plan
 
 
@@ -246,22 +245,14 @@ class _Narrator:
 def _load_clone_narrator() -> _Narrator:
     """Load the Base clone model and lock in the committed reference voice."""
 
-    import soundfile as sf
-
-    voice_dir = VOICES_DIR / ACTIVE_VOICE
-    audio_path = voice_dir / VOICE_REFERENCE_AUDIO_FILENAME
-    metadata_path = voice_dir / VOICE_REFERENCE_METADATA_FILENAME
-    if not audio_path.exists() or not metadata_path.exists():
+    try:
+        voice = resolve_voice(ACTIVE_VOICE, voices_dir=VOICES_DIR)
+    except FileNotFoundError as exc:
         raise RuntimeError(
-            f"Active voice {ACTIVE_VOICE!r} not found in {voice_dir}. Create it "
-            f"with 'python design_voice.py {ACTIVE_VOICE}' before narrating with "
+            f"{exc} Set ACTIVE_VOICE before narrating with "
             "TTS_BACKEND='voice_clone'."
-        )
-
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    ref_text = metadata["ref_text"]
-    ref_audio, sample_rate = sf.read(audio_path)
-    ref_audio = np.asarray(ref_audio, dtype=np.float32).reshape(-1)
+        ) from exc
+    print(describe(voice))
 
     model_path = str(
         LOCAL_VOICE_CLONE_MODEL_PATH
@@ -272,15 +263,14 @@ def _load_clone_narrator() -> _Narrator:
     # Encode the reference once; every chunk reuses it for a stable narrator.
     prompt = build_voice_clone_prompt(
         model,
-        ref_audio=ref_audio,
-        sample_rate=int(sample_rate),
-        ref_text=ref_text,
+        ref_audio=voice.audio,
+        sample_rate=voice.sample_rate,
+        ref_text=voice.ref_text,
     )
-    label = metadata.get("slug", "voice_clone")
     return _Narrator(
-        label=label,
+        label=voice.slug,
         model_path=model_path,
-        instruction=metadata.get("instruct"),
+        instruction=voice.instruct,
         generate=lambda chunk: generate_clone_chunk(
             model, chunk, voice_clone_prompt=prompt, language=LANGUAGE
         ),
