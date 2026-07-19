@@ -291,14 +291,18 @@ def list_prepared_scripts(output_dir: Path = DEFAULT_OUTPUT_DIR) -> list[Path]:
 
 
 def _is_prepared_book(path: Path) -> bool:
-    """Cheap structural check so unrelated JSON never reaches the narrator."""
+    """Structural check so unrelated JSON never reaches the narrator.
+
+    The keys are looked for anywhere in the file, not in a fixed-size head:
+    ``chapters`` follows the source and provider metadata, which carry the
+    prompt and can push it well past any prefix worth guessing.
+    """
 
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            head = handle.read(4096)
-    except OSError:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
         return False
-    return '"chapters"' in head and '"schema_version"' in head
+    return '"chapters"' in text and '"schema_version"' in text
 
 
 def list_audiobooks(output_dir: Path = DEFAULT_OUTPUT_DIR) -> list[Path]:
