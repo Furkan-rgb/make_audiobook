@@ -159,13 +159,35 @@ def _sidecar_ref_text(path: Path) -> str | None:
     return None
 
 
+def reference_audio_path(voice_dir: Path) -> Path | None:
+    """The reference clip inside a voice folder, whatever it was encoded as.
+
+    Designed voices are always written as ``reference.wav``, but an imported
+    recording keeps the encoding it arrived in — re-encoding a FLAC to WAV to
+    satisfy a filename would be a lossy step taken for no reason.
+    """
+
+    canonical = voice_dir / VOICE_REFERENCE_AUDIO_FILENAME
+    if canonical.exists():
+        return canonical
+    stem = canonical.stem
+    for child in sorted(voice_dir.glob(f"{stem}.*")):
+        if child.suffix.lower() in AUDIO_SUFFIXES:
+            return child
+    return None
+
+
 def _load_voice_folder(voice_dir: Path, *, sample_rate: int) -> ReferenceVoice:
-    """Load a designed voice written by ``design_voice.py``."""
+    """Load a voice folder: a designed one, or an imported recording."""
 
     metadata = json.loads(
         (voice_dir / VOICE_REFERENCE_METADATA_FILENAME).read_text(encoding="utf-8")
     )
-    audio_path = voice_dir / VOICE_REFERENCE_AUDIO_FILENAME
+    audio_path = reference_audio_path(voice_dir)
+    if audio_path is None:
+        raise FileNotFoundError(
+            f"{voice_dir} has no reference clip beside its {VOICE_REFERENCE_METADATA_FILENAME}."
+        )
     audio, rate = load_reference_audio(audio_path, sample_rate=sample_rate)
     return ReferenceVoice(
         slug=metadata.get("slug", voice_dir.name),
@@ -278,6 +300,7 @@ __all__ = [
     "ReferenceVoice",
     "describe",
     "load_reference_audio",
+    "reference_audio_path",
     "resolve_voice",
     "trim_silence",
 ]

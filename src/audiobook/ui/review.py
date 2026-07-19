@@ -24,6 +24,25 @@ from ..preparation import PreparedBook, load_prepared_book, sha256_file
 WORDS_PER_MINUTE = 140.0
 
 _CACHE: dict[Path, tuple[float, int, PreparedBook]] = {}
+_HASHES: dict[Path, tuple[float, int, str]] = {}
+
+
+def _cached_digest(path: Path) -> str:
+    """Hash a source file once per version of it, not once per glance.
+
+    Selecting a prepared script re-checks that its PDF is unchanged, and a book
+    PDF is large enough that re-hashing on every click is felt.  Keyed on mtime
+    and size, so an actually-changed file is still hashed again.
+    """
+
+    stat = path.stat()
+    signature = (stat.st_mtime, stat.st_size)
+    cached = _HASHES.get(path)
+    if cached is not None and cached[:2] == signature:
+        return cached[2]
+    digest = sha256_file(path)
+    _HASHES[path] = (*signature, digest)
+    return digest
 
 
 def load_artifact(path: str | Path) -> PreparedBook:
@@ -163,7 +182,7 @@ def _source_line(book: PreparedBook) -> str:
         return f"- Source: `{path}` — **missing now**; cannot confirm it is the book this came from."
     if not source.sha256:
         return f"- Source: `{path}` (no hash recorded)"
-    if sha256_file(path) != source.sha256:
+    if _cached_digest(path) != source.sha256:
         return (
             f"- Source: `{path}` — **has changed since preparation**. "
             "Re-prepare, or this narrates an older edition."

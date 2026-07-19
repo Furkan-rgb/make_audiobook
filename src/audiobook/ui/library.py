@@ -19,7 +19,7 @@ from ..config import (
     VOICE_REFERENCE_METADATA_FILENAME,
     VOICES_DIR,
 )
-from ..synthesis.voices import AUDIO_SUFFIXES
+from ..synthesis.voices import AUDIO_SUFFIXES, reference_audio_path
 
 
 @dataclass(frozen=True)
@@ -37,33 +37,49 @@ class VoiceEntry:
     ref_text: str | None
     instruct: str | None
     designed: bool
+    folder: bool = True
 
     @property
     def has_transcript(self) -> bool:
         return bool(self.ref_text)
 
 
-def _designed_voice(voice_dir: Path) -> VoiceEntry | None:
+def _folder_voice(voice_dir: Path) -> VoiceEntry | None:
+    """Read a voice folder — the layout every voice is written in.
+
+    Designed voices and imported recordings share it: a reference clip and a
+    ``reference.json`` beside it.  What distinguishes them is the persona the
+    designed one was rendered from, which a recording has no equivalent of.
+    """
+
     metadata_path = voice_dir / VOICE_REFERENCE_METADATA_FILENAME
-    audio_path = voice_dir / VOICE_REFERENCE_AUDIO_FILENAME
-    if not metadata_path.exists() or not audio_path.exists():
+    audio_path = reference_audio_path(voice_dir)
+    if not metadata_path.exists() or audio_path is None:
         return None
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
+    instruct = metadata.get("instruct") or None
     return VoiceEntry(
         spec=voice_dir.name,
-        label=f"{voice_dir.name}  (designed)",
+        label=f"{voice_dir.name}  ({'designed' if instruct else 'recording'})",
         audio_path=audio_path,
         transcript_path=metadata_path,
         ref_text=metadata.get("ref_text") or None,
-        instruct=metadata.get("instruct") or None,
-        designed=True,
+        instruct=instruct,
+        designed=bool(instruct),
+        folder=True,
     )
 
 
-def _recorded_voice(path: Path) -> VoiceEntry:
+def _loose_voice(path: Path) -> VoiceEntry:
+    """A recording sitting directly in ``voices/``, as older versions wrote them.
+
+    Still listed and still usable, so nothing anyone saved stops working; new
+    imports go into folders, and :func:`migrate_loose_recordings` folds these in.
+    """
+
     transcript_path = path.with_suffix(".txt")
     ref_text = (
         transcript_path.read_text(encoding="utf-8").strip()
@@ -78,26 +94,27 @@ def _recorded_voice(path: Path) -> VoiceEntry:
         ref_text=ref_text or None,
         instruct=None,
         designed=False,
+        folder=False,
     )
 
 
 def list_voices(voices_dir: Path = VOICES_DIR) -> list[VoiceEntry]:
-    """Every usable voice, designed folders first then loose recordings."""
+    """Every usable voice: voice folders first, then any loose recordings."""
 
     if not voices_dir.exists():
         return []
 
-    designed = [
+    folders = [
         entry
         for child in sorted(voices_dir.iterdir())
-        if child.is_dir() and (entry := _designed_voice(child)) is not None
+        if child.is_dir() and (entry := _folder_voice(child)) is not None
     ]
-    recorded = [
-        _recorded_voice(child)
+    loose = [
+        _loose_voice(child)
         for child in sorted(voices_dir.iterdir())
         if child.is_file() and child.suffix.lower() in AUDIO_SUFFIXES
     ]
-    return designed + recorded
+    return folders + loose
 
 
 def find_voice(spec: str, voices_dir: Path = VOICES_DIR) -> VoiceEntry | None:
@@ -115,7 +132,7 @@ def save_transcript(entry: VoiceEntry, text: str) -> str:
     """
 
     text = text.strip()
-    if entry.designed:
+    if entry.folder:
         metadata = json.loads(entry.transcript_path.read_text(encoding="utf-8"))
         metadata["ref_text"] = text
         entry.transcript_path.write_text(
@@ -133,8 +150,8 @@ def save_transcript(entry: VoiceEntry, text: str) -> str:
 def rename_voice(entry: VoiceEntry, new_name: str) -> str:
     """Rename a voice on disk and return the spec it now answers to.
 
-    Renaming must move everything that makes the voice findable — the designed
-    folder, or the recording plus its transcript sidecar — or the next
+    Renaming must move everything that makes the voice findable — the voice
+    folder, or a loose recording plus its transcript sidecar — or the next
     ``list_voices`` would show a half-renamed orphan.
     """
 
@@ -142,7 +159,7 @@ def rename_voice(entry: VoiceEntry, new_name: str) -> str:
     if not new_name:
         raise ValueError("Give the voice a new name.")
 
-    if entry.designed:
+    if entry.folder:
         source_dir = entry.audio_path.parent
         target_dir = source_dir.with_name(new_name)
         if target_dir.exists():
@@ -168,7 +185,7 @@ def rename_voice(entry: VoiceEntry, new_name: str) -> str:
 def delete_voice(entry: VoiceEntry) -> str:
     """Remove a voice from disk entirely."""
 
-    if entry.designed:
+    if entry.folder:
         shutil.rmtree(entry.audio_path.parent)
         return f"Deleted {entry.audio_path.parent}."
     entry.audio_path.unlink()
@@ -177,22 +194,88 @@ def delete_voice(entry: VoiceEntry) -> str:
     return f"Deleted {entry.audio_path}."
 
 
+def _write_reference_metadata(
+    voice_dir: Path, *, slug: str, ref_text: str, source_name: str
+) -> None:
+    """Write the ``reference.json`` that makes a folder a voice."""
+
+    (voice_dir / VOICE_REFERENCE_METADATA_FILENAME).write_text(
+        json.dumps(
+            {
+                "slug": slug,
+                "instruct": None,  # a recording has no persona it was rendered from
+                "ref_text": ref_text,
+                "source": source_name,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 def import_recording(
-    upload_path: str | Path, name: str = "", voices_dir: Path = VOICES_DIR
-) -> Path:
-    """Copy an uploaded recording into the voices directory under *name*.
+    upload_path: str | Path,
+    name: str = "",
+    ref_text: str = "",
+    voices_dir: Path = VOICES_DIR,
+) -> str:
+    """Save an uploaded recording as a voice folder and return its spec.
 
     Gradio hands over a temp file that is cleaned up later, so the audio has to
-    be copied somewhere permanent before it can become a voice.
+    be copied somewhere permanent before it can become a voice.  It lands in
+    ``voices/<name>/`` alongside its metadata, the same shape a designed voice
+    has: one voice is one directory, whatever it was made from.  The upload's
+    encoding is preserved — re-encoding to match a filename would lose quality
+    to no end.
     """
 
     source = Path(upload_path)
-    stem = (name.strip() or source.stem).replace("/", "_")
-    voices_dir.mkdir(parents=True, exist_ok=True)
-    destination = voices_dir / f"{stem}{source.suffix.lower()}"
+    slug = (name.strip() or source.stem).replace("/", "_")
+    voice_dir = voices_dir / slug
+    voice_dir.mkdir(parents=True, exist_ok=True)
+    destination = voice_dir / f"reference{source.suffix.lower()}"
     if destination.resolve() != source.resolve():
         shutil.copyfile(source, destination)
-    return destination
+    _write_reference_metadata(
+        voice_dir, slug=slug, ref_text=ref_text.strip(), source_name=source.name
+    )
+    return slug
+
+
+def migrate_loose_recordings(voices_dir: Path = VOICES_DIR) -> list[str]:
+    """Fold recordings saved directly in ``voices/`` into their own folders.
+
+    Older versions wrote an imported recording as ``voices/<name>.wav`` plus a
+    ``<name>.txt`` sidecar.  Both layouts still load, but two of them is one
+    too many for rename, delete and the picker to keep explaining, so this
+    moves the old shape to the new one.  Idempotent, and it refuses to touch a
+    recording whose name is already taken by a folder.
+    """
+
+    if not voices_dir.exists():
+        return []
+
+    moved: list[str] = []
+    for child in sorted(voices_dir.iterdir()):
+        if not child.is_file() or child.suffix.lower() not in AUDIO_SUFFIXES:
+            continue
+        voice_dir = voices_dir / child.stem
+        if voice_dir.exists():
+            continue
+        sidecar = child.with_suffix(".txt")
+        ref_text = (
+            sidecar.read_text(encoding="utf-8").strip() if sidecar.exists() else ""
+        )
+        voice_dir.mkdir(parents=True)
+        child.rename(voice_dir / f"reference{child.suffix.lower()}")
+        _write_reference_metadata(
+            voice_dir, slug=child.stem, ref_text=ref_text, source_name=child.name
+        )
+        if sidecar.exists():
+            sidecar.unlink()
+        moved.append(child.stem)
+    return moved
 
 
 def list_prepared_scripts(output_dir: Path = DEFAULT_OUTPUT_DIR) -> list[Path]:
@@ -236,6 +319,7 @@ __all__ = [
     "list_audiobooks",
     "list_prepared_scripts",
     "list_voices",
+    "migrate_loose_recordings",
     "rename_voice",
     "save_transcript",
 ]

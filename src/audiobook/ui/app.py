@@ -67,12 +67,55 @@ from .library import (
     save_transcript,
 )
 from .review import flagged_units, load_artifact, render_unit, summarize
-from .runtime import gpu_lock, load_model, loaded_model_name, stream_output, unload_model
+from .runtime import gpu_slot, load_model, loaded_model_name, stream_output, unload_model
 
 AUDITION_TEXT = (
     "By morning, the decision no longer seemed complicated. The house was "
     "silent, and pale light crossed the hallway floor."
 )
+
+# Every action that occupies the GPU or a long-lived model, with the label it
+# shows while it is running.  One list because there is one machine: a
+# narration and a voice audition cannot both have it, and preparation holds a
+# local LLM in the same VRAM the TTS checkpoint needs.  Disabling all of them
+# together turns a silent wait on the lock into a visible one.
+HEAVY_ACTIONS = (
+    ("Free GPU", "Freeing..."),
+    ("Generate", "Generating..."),
+    ("Process recording", "Processing..."),
+    ("Audition", "Auditioning..."),  # clone tab
+    ("Infer transcript again", "Transcribing..."),
+    ("Audition", "Auditioning..."),  # library tab
+    ("Prepare", "Preparing..."),
+    ("Narrate", "Narrating..."),
+)
+
+
+def _begin_work(index: int, *clears):
+    """Take the machine: disable every heavy action and blank stale results.
+
+    The clears matter as much as the disabling.  An audio player still holding
+    the previous take, or a Review header still describing the previous
+    artifact, is worse than an empty one — it invites a judgement about work
+    that has not happened yet.
+    """
+
+    def handler():
+        updates = [
+            gr.update(interactive=False, value=busy)
+            if position == index
+            else gr.update(interactive=False)
+            for position, (_, busy) in enumerate(HEAVY_ACTIONS)
+        ]
+        return updates + list(clears)
+
+    return handler
+
+
+def _end_work():
+    """Give it back.  Wired with .then, so a crashed run still restores the UI."""
+
+    return [gr.update(interactive=True, value=idle) for idle, _ in HEAVY_ACTIONS]
 
 
 def _design_model_path() -> str:
@@ -114,7 +157,7 @@ def _generate_design(instruct: str, ref_text: str):
         return
 
     def work() -> dict:
-        with gpu_lock():
+        with gpu_slot():
             model = load_model(_design_model_path())
             print("Designing a candidate voice...")
             audio, sample_rate = design_reference_clip(
@@ -210,7 +253,7 @@ def _process_recording(upload: str | None):
         source = Path(upload)
         staged = Path(tempfile.mkdtemp(prefix="voice-staging-")) / source.name
         shutil.copyfile(source, staged)
-        with gpu_lock():  # ASR runs on the GPU
+        with gpu_slot():  # ASR runs on the GPU
             voice = resolve_voice(
                 str(staged), transcribe_missing=REFERENCE_TRANSCRIBE
             )
@@ -250,19 +293,13 @@ def _save_clone(pending: dict | None, transcript: str, name: str):
     if not pending:
         return "Process a recording first.", gr.update(), gr.update()
 
-    destination = import_recording(pending["path"], name)
     transcript = transcript.strip()
-    sidecar = destination.with_suffix(".txt")
-    if transcript:
-        sidecar.write_text(transcript + "\n", encoding="utf-8")
-    elif sidecar.exists():
-        sidecar.unlink()
-
+    spec = import_recording(pending["path"], name, transcript)
     mode = "timbre + prosody" if transcript else "timbre only"
     return (
-        f"Saved {destination} — clones {mode}.",
-        _voice_dropdown_update(str(destination)),
-        _voice_dropdown_update(str(destination)),
+        f"Saved {VOICES_DIR / spec} — clones {mode}.",
+        _voice_dropdown_update(spec),
+        _voice_dropdown_update(spec),
     )
 
 
@@ -278,7 +315,7 @@ def _run_clone(spec: str, ref_text: str | None, text: str):
         return
 
     def work() -> tuple[int, np.ndarray]:
-        with gpu_lock():
+        with gpu_slot():
             voice = resolve_voice(spec, ref_text=ref_text, transcribe_missing=False)
             print(describe(voice))
             model = load_model(_clone_model_path())
@@ -341,7 +378,7 @@ def _retranscribe(spec: str | None, current: str):
     def work() -> str | None:
         from ..synthesis.transcribe import transcribe
 
-        with gpu_lock():
+        with gpu_slot():
             # Transcribe exactly what cloning conditions on: trimmed and
             # levelled, not the raw file.
             voice = resolve_voice(spec, transcribe_missing=False)
@@ -389,7 +426,7 @@ def _voice_display_name(spec: str) -> str:
     entry = find_voice(spec)
     if entry is None:
         return ""
-    return entry.spec if entry.designed else Path(entry.audio_path).stem
+    return entry.spec if entry.folder else Path(entry.audio_path).stem
 
 
 def _begin_rename(spec: str | None):
@@ -652,7 +689,7 @@ def _narrate(
     def work():
         # Narration loads its own checkpoint, so free the audition model first
         # rather than discovering the collision as an out-of-memory error.
-        with gpu_lock():
+        with gpu_slot():
             unload_model()
             return narrate_prepared_script(options)
 
@@ -917,13 +954,44 @@ def build_app() -> gr.Blocks:
 
         # -------------------------------------------------------- wiring
 
-        free_gpu.click(lambda: (unload_model(), _gpu_status())[1], outputs=gpu_status)
+        # Every heavy action is wired begin → work → end.  begin and end run
+        # with queue=False so they land immediately rather than queueing behind
+        # the very run they exist to announce; concurrency_id groups the work
+        # itself, so a second browser tab queues visibly instead of blocking on
+        # the lock; trigger_mode="once" is the double-click guard.
+        heavy_buttons = [
+            free_gpu,
+            design_generate,
+            process_button,
+            clone_audition_button,
+            retranscribe_button,
+            audition_button,
+            prepare_button,
+            narrate_button,
+        ]
+        assert len(heavy_buttons) == len(HEAVY_ACTIONS)
+        busy = dict(outputs=heavy_buttons, queue=False, show_progress="hidden")
+        release = dict(fn=_end_work, **busy)
+
+        free_gpu.click(_begin_work(0), **busy).then(
+            lambda: (unload_model(), _gpu_status())[1],
+            outputs=gpu_status,
+            concurrency_id="heavy",
+            trigger_mode="once",
+        ).then(**release)
 
         design_generate.click(
+            _begin_work(1, None, None),
+            outputs=heavy_buttons + [design_audio, design_pending],
+            queue=False,
+            show_progress="hidden",
+        ).then(
             _generate_design,
             inputs=[design_instruct, design_ref_text],
             outputs=[design_log, design_audio, design_pending],
-        ).then(_gpu_status, outputs=gpu_status)
+            concurrency_id="heavy",
+            trigger_mode="once",
+        ).then(**release).then(_gpu_status, outputs=gpu_status)
         design_save.click(
             _save_design,
             inputs=[design_pending, design_name],
@@ -934,6 +1002,12 @@ def build_app() -> gr.Blocks:
         )
 
         process_button.click(
+            _begin_work(2, None, "", "", None),
+            outputs=heavy_buttons
+            + [processed_audio, clone_transcript, clone_mode, clone_pending],
+            queue=False,
+            show_progress="hidden",
+        ).then(
             _process_recording,
             inputs=import_file,
             outputs=[
@@ -943,13 +1017,22 @@ def build_app() -> gr.Blocks:
                 clone_mode,
                 clone_pending,
             ],
-        ).then(_gpu_status, outputs=gpu_status)
+            concurrency_id="heavy",
+            trigger_mode="once",
+        ).then(**release).then(_gpu_status, outputs=gpu_status)
         clone_transcript.change(_mode_note, inputs=clone_transcript, outputs=clone_mode)
         clone_audition_button.click(
+            _begin_work(3, None),
+            outputs=heavy_buttons + [clone_audition_audio],
+            queue=False,
+            show_progress="hidden",
+        ).then(
             _audition_pending,
             inputs=[clone_pending, clone_transcript, clone_audition_text],
             outputs=[clone_log, clone_audition_audio],
-        ).then(_gpu_status, outputs=gpu_status)
+            concurrency_id="heavy",
+            trigger_mode="once",
+        ).then(**release).then(_gpu_status, outputs=gpu_status)
         clone_save.click(
             _save_clone,
             inputs=[clone_pending, clone_transcript, clone_name],
@@ -976,16 +1059,27 @@ def build_app() -> gr.Blocks:
             inputs=[voice_picker, voice_transcript],
             outputs=voice_status,
         )
-        retranscribe_button.click(
+        # The transcript box is deliberately not cleared: _retranscribe compares
+        # the new recognition against what is in it, which is the whole point.
+        retranscribe_button.click(_begin_work(4), **busy).then(
             _retranscribe,
             inputs=[voice_picker, voice_transcript],
             outputs=[library_log, voice_transcript],
-        ).then(_gpu_status, outputs=gpu_status)
+            concurrency_id="heavy",
+            trigger_mode="once",
+        ).then(**release).then(_gpu_status, outputs=gpu_status)
         audition_button.click(
+            _begin_work(5, None),
+            outputs=heavy_buttons + [audition_audio],
+            queue=False,
+            show_progress="hidden",
+        ).then(
             _audition,
             inputs=[voice_picker, audition_text],
             outputs=[library_log, audition_audio],
-        ).then(_gpu_status, outputs=gpu_status)
+            concurrency_id="heavy",
+            trigger_mode="once",
+        ).then(**release).then(_gpu_status, outputs=gpu_status)
         rename_open.click(
             _begin_rename,
             inputs=voice_picker,
@@ -1018,6 +1112,19 @@ def build_app() -> gr.Blocks:
         )
 
         prepare_button.click(
+            _begin_work(
+                6,
+                "_Preparing a new artifact..._",
+                gr.update(choices=[], value=None),
+                "",
+                "",
+                {},
+            ),
+            outputs=heavy_buttons
+            + [review_summary, flagged_picker, flagged_detail, review, flagged_state],
+            queue=False,
+            show_progress="hidden",
+        ).then(
             _prepare,
             inputs=[
                 pdf_input,
@@ -1030,7 +1137,9 @@ def build_app() -> gr.Blocks:
                 force_preparation,
             ],
             outputs=[prepare_log, script_picker],
-        ).then(
+            concurrency_id="heavy",
+            trigger_mode="once",
+        ).then(**release).then(
             _load_review,
             inputs=[script_picker, preparation_model],
             outputs=[
@@ -1049,7 +1158,14 @@ def build_app() -> gr.Blocks:
             outputs=[preparation_model, provider_note],
         )
         refresh_scripts.click(_script_dropdown_update, outputs=script_picker)
+        # Reading an artifact parses a large JSON and hashes the source PDF, so
+        # say so first rather than leaving the old book's header standing.
         script_picker.change(
+            lambda: "_Reading artifact..._",
+            outputs=review_summary,
+            queue=False,
+            show_progress="hidden",
+        ).then(
             _load_review,
             inputs=[script_picker, preparation_model],
             outputs=[
@@ -1065,6 +1181,11 @@ def build_app() -> gr.Blocks:
         )
 
         narrate_button.click(
+            _begin_work(7, None),
+            outputs=heavy_buttons + [narrate_result],
+            queue=False,
+            show_progress="hidden",
+        ).then(
             _narrate,
             inputs=[
                 script_picker,
@@ -1075,7 +1196,9 @@ def build_app() -> gr.Blocks:
                 dry_run,
             ],
             outputs=[narrate_log, narrate_result, audiobook_picker],
-        ).then(_gpu_status, outputs=gpu_status)
+            concurrency_id="heavy",
+            trigger_mode="once",
+        ).then(**release).then(_gpu_status, outputs=gpu_status)
 
         refresh_audiobooks.click(_audiobook_update, outputs=audiobook_picker)
         audiobook_picker.change(

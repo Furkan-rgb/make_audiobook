@@ -14,7 +14,7 @@ import queue
 import sys
 import threading
 import traceback
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from typing import Any, Callable, Iterator
 
 _loaded: tuple[str, Any] | None = None
@@ -29,6 +29,26 @@ def gpu_lock() -> threading.Lock:
     """
 
     return _gpu_lock
+
+
+@contextmanager
+def gpu_slot():
+    """Hold the GPU for the duration of a block, saying so if there is a wait.
+
+    Acquiring the lock silently is what makes a queued run look like a frozen
+    page: nothing prints, so nothing reaches the log the browser is watching.
+    Announcing the wait from inside the worker thread puts it in that log
+    through the same :func:`stream_output` path as the run's own output.
+    """
+
+    lock = gpu_lock()
+    if not lock.acquire(blocking=False):
+        print("Waiting for the GPU — another run is using it...")
+        lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def load_model(path: str) -> Any:
@@ -146,6 +166,7 @@ def stream_output(work: Callable[[], Any]) -> Iterator[tuple[str, Any]]:
 
 __all__ = [
     "gpu_lock",
+    "gpu_slot",
     "load_model",
     "loaded_model_name",
     "stream_output",
