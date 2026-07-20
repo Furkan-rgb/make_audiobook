@@ -25,8 +25,13 @@ DEFAULT_PREPARED_MARKDOWN_FILENAME = "prepared_book.md"
 PREPARATION_PROVIDERS = {
     "ollama": {
         "base_url": "http://127.0.0.1:11434",
-        "models": ("gemma4:12b",),
+        "models": ("gemma4:26b",),
         "auto_pull": True,
+        # Reasoning mode. Only takes effect on models that report a "thinking"
+        # capability (check with `ollama show <model>`); the adapter raises the
+        # context and output budgets so the reasoning trace does not truncate
+        # the JSON answer.
+        "think": True,
     },
 }
 DEFAULT_PREPARATION_PROVIDER = "ollama"

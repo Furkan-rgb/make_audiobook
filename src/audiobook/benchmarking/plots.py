@@ -145,6 +145,12 @@ def _by_tier_fig(plt, ranked: Sequence[ModelReport]):
             color=_TIER_COLORS[index % len(_TIER_COLORS)],
             label=tier,
         )
+        # Label each sub-bar with its score, as the scores and speed charts do;
+        # the tiers are often all near 1.0, so the exact figure is what
+        # separates them.
+        for position, value in zip(positions, values):
+            ax.text(min(value, 1.0) + 0.012, position + offset, f"{value:.2f}",
+                    va="center", fontsize=7.5, color=_MUTED, clip_on=False)
     ax.set_yticks(positions)
     ax.set_yticklabels([item.model for item in ranked], fontsize=10.5)
     ax.invert_yaxis()

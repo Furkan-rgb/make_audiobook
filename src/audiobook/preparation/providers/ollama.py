@@ -145,7 +145,7 @@ class OllamaProvider:
         # into it loses the whole unit to a truncated JSON string — so it stays
         # generous even though the expected output shrank.
         num_predict: int = 4096,
-        think: bool = False,
+        think: bool | None = None,
         keep_alive: str | int = "10m",
         unload_on_close: bool = True,
         prompt_version: str = DEFAULT_PROMPT_VERSION,
@@ -164,6 +164,11 @@ class OllamaProvider:
         parsed = urlparse(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("Ollama base_url must be an http(s) URL")
+        if think is None:
+            # Unset means "defer to config", mirroring auto_pull below, so a
+            # project can turn reasoning on for its whole run from config.py
+            # without every call site having to thread the flag through.
+            think = bool(_configured().get("think", False))
         if think:
             # A reasoning model emits its thinking before the JSON answer, and
             # both share the context window and the output budget. A direct

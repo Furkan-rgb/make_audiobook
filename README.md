@@ -194,6 +194,28 @@ timestamped directory under `output/benchmarks/` containing:
   flagged in red), `by-tier.png`, and `speed.png`, drawn with matplotlib and
   ready to embed in Markdown.
 
+### Example results
+
+The charts below are one real run of the full corpus across the shipped Gemma
+models and a few larger alternatives, each scored direct and with reasoning
+enabled (`+think`). The composite score is the headline: any bar in red made at
+least one **fidelity failure** — a change to a word the author wrote — and is
+ranked below every clean model regardless of how tall its bar is.
+
+![Composite score per model; red marks a fidelity failure](docs/images/benchmark-scores.png)
+
+Breaking each model's score across the four corpus tiers shows *where* it spends
+its mistakes — a missed real edit (core) reads very differently from a clean
+passage it disturbed (noop) or a trap it fell for.
+
+![Score broken down by corpus tier for each model](docs/images/benchmark-by-tier.png)
+
+Mean wall time per case makes the price of reasoning legible: the `+think`
+variants sit far to the right, several times slower per unit for a fidelity gain
+that, here, they do not always deliver.
+
+![Mean seconds per case, fastest first](docs/images/benchmark-speed.png)
+
 The corpus is organised into four tiers: **core** (real citations, markers,
 notation, and extraction artifacts to fix), **noop** (clean prose whose correct
 answer is to change nothing), **trap** (a legitimate edit sitting next to a
