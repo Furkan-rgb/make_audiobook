@@ -13,7 +13,7 @@ DEFAULT_POLICY = (
     "softening, modernizing, or otherwise changing the author's meaning."
 )
 
-UnitKind = Literal["prose", "heading", "scene_marker"]
+UnitKind = Literal["prose", "heading", "scene_marker", "display_line"]
 
 
 @dataclass(frozen=True)
@@ -99,8 +99,9 @@ class SourceMetadata:
 class PreparationRequest:
     """One prose unit submitted to a narration-preparation provider.
 
-    Neighbor context is reference-only and must never be copied into
-    ``prepared_text``.
+    Neighbor context is shown only so the model can judge continuity. It is
+    never part of what gets edited: edits are anchored in ``source_text``, so a
+    quotation taken from the context simply fails to anchor and is dropped.
     """
 
     chapter_title: str
@@ -154,9 +155,13 @@ class PreparationEdit:
 
 @dataclass
 class PreparationResult:
-    """Provider response before it is incorporated into a book artifact."""
+    """What a provider returns: proposed changes, never prepared prose.
 
-    prepared_text: str
+    A provider parses and reports; it does not decide what the passage becomes.
+    The pipeline applies these edits itself, so two adapters given identical
+    model output cannot produce different text.
+    """
+
     edits: list[PreparationEdit] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     provider_metadata: ProviderMetadata | None = None
@@ -164,7 +169,12 @@ class PreparationResult:
 
 @dataclass
 class PreparedUnit:
-    """A prepared prose unit or an untouched structural marker."""
+    """One unit of the finished script, prose or passed through verbatim.
+
+    Only ``prose`` units ever reach a model. Headings, scene markers, and
+    display lines carry ``prepared_text == source_text`` by construction, which
+    :func:`~audiobook.preparation.artifacts.validate_artifact` enforces.
+    """
 
     unit_id: str
     position: int

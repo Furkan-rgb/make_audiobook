@@ -28,6 +28,8 @@ from audiobook.preparation import (
     SourceMetadata,
     ValidationPolicy,
     apply_edits,
+    is_display_line,
+    lexical_retention,
     load_prepared_book,
     normalize_text,
     numbered_view,
@@ -41,104 +43,14 @@ from audiobook.preparation import (
 from audiobook.preparation.providers.ollama import DEFAULT_OLLAMA_MODEL
 from audiobook.chunking.semantic import build_chunk_plan
 
-
-PREFACE_SOURCE = """The psychotherapy of male homosexuals has been explored for many years. What is new
-in this book is the interweaving of several strands of clinical research: the development
-of male gender-identity (Abelin 1975, Greenacre 1957, Greenson 1968, Greenspan 1982,
-Kohl- berg 1966, LaTorre 1979, Mahler 1955, Moberly 1983, Money and Ehrhardt 1972,
-Ross 1979, Stoller 1968), histories of family dynamics (Bell and Weinberg 1978, Bieber et
-al. 1962, Green 1987, Higham 1976, Money and Russo 1979, Tyson 1985), and the
-techniques of psychodynamic psychotherapy of male homosexuality (Gershman 1953,
-Hadden 1966, Hamilton 1939, Hatterer 1970, Horner 1989, Masters and Johnson 1979,
-Nun- berg 1938, Ovesey 1969, Socarides 1978, van den Aardweg 1986, Winnicott 1965).
-
-I would like to thank a number of people, without whose help this book could not
-have been written. I want to express my appreciation to my office staff—Jennie Gohn,
-Margaret Guiteras, Edith Joanis, Joan Multerer, and Cindy Anctil, and very special
-appreciation to my research assistant, Jeanne Armstrong, whose many hours in the
-library made this book possible."""
-
-PREFACE_PREPARED = """The psychotherapy of male homosexuals has been explored for many years. What is new in this book is the interweaving of several strands of clinical research: the development of male gender-identity, histories of family dynamics, and the techniques of psychodynamic psychotherapy of male homosexuality.
-
-I would like to thank a number of people, without whose help this book could not have been written. I want to express my appreciation to my office staff—Jennie Gohn, Margaret Guiteras, Edith Joanis, Joan Multerer, and Cindy Anctil, and very special appreciation to my research assistant, Jeanne Armstrong, whose many hours in the library made this book possible."""
-
-
-class FakeProvider:
-    def __init__(self, *, model="gemma4:31b", transform=None):
-        self._metadata = ProviderMetadata(
-            name="fake",
-            model=model,
-            prompt_version=DEFAULT_PROMPT_VERSION,
-            parameters={"temperature": 0.0},
-        )
-        self.transform = transform
-        self.calls = []
-        self.availability_checks = 0
-        self.closed = False
-
-    @property
-    def metadata(self):
-        return self._metadata
-
-    def check_available(self):
-        self.availability_checks += 1
-
-    def prepare(self, request):
-        self.calls.append(request)
-        if self.transform is not None:
-            result = self.transform(request)
-        else:
-            result = PreparationResult(prepared_text=request.source_text)
-        if result.provider_metadata is None:
-            result.provider_metadata = self.metadata
-        return result
-
-    def close(self):
-        self.closed = True
-
-
-class FakeHTTPResponse:
-    def __init__(self, body):
-        self.body = body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        return False
-
-    def read(self, _limit=-1):
-        return self.body
-
-    def __iter__(self):
-        # urlopen responses iterate line by line; /api/pull streams NDJSON.
-        return iter(self.body.splitlines(keepends=True))
-
-
-def make_single_unit_book(source_text, prepared_text):
-    metadata = ProviderMetadata(name="fake", model="gemma4:31b")
-    unit = PreparedUnit(
-        unit_id="chapter-0000-unit-0000-fixture",
-        position=0,
-        kind="prose",
-        source_text=source_text,
-        prepared_text=prepared_text,
-        provider_metadata=metadata,
-    )
-    chapter = PreparedChapter(
-        index=0,
-        title="Preface",
-        source_text=source_text,
-        normalized_text=source_text,
-        units=[unit],
-    )
-    book = PreparedBook(
-        title="Unicode Book",
-        source_metadata=SourceMetadata(extra={"language": "Français"}),
-        provider_metadata=metadata,
-        chapters=[chapter],
-    )
-    return refresh_hashes(book)
+from support import (
+    PREFACE_PREPARED,
+    PREFACE_SOURCE,
+    FakeHTTPResponse,
+    FakeProvider,
+    citation_edits,
+    make_single_unit_book,
+)
 
 
 class NormalizationAndSegmentationTests(unittest.TestCase):
@@ -215,465 +127,114 @@ class NormalizationAndSegmentationTests(unittest.TestCase):
         self.assertTrue(all(unit.endswith(".") for unit in prose))
 
 
-def _citation_edits(source: str) -> list[dict[str, object]]:
-    """What a well-behaved model returns for the preface: three deletions.
+class ProviderBoundaryTests(unittest.TestCase):
+    """A provider proposes; the pipeline disposes."""
 
-    Built by locating the parentheticals rather than by hand so the fixture
-    states the model's *intent* — remove the author-year lists — while the
-    exact characters, and therefore the spacing of the result, are the
-    pipeline's problem to get right.
-    """
+    def test_the_pipeline_applies_edits_a_provider_only_reports(self):
+        source = "The finding (Smith 1999) held under replication."
 
-    spans = sentence_spans(source)
-    edits: list[dict[str, object]] = []
-    for match in re.finditer(r"\([^()]*\b\d{4}\b[^()]*\)", source):
-        sentence = next(
-            number
-            for number, (start, end) in enumerate(spans, start=1)
-            if start <= match.start() and match.end() <= end
+        def propose(_request):
+            return PreparationResult(
+                edits=[
+                    PreparationEdit(
+                        category="bibliographic_citation",
+                        original="(Smith 1999)",
+                        replacement="",
+                        sentence=1,
+                    )
+                ]
+            )
+
+        provider = FakeProvider(transform=propose)
+        book = NarrationPreparationPipeline(provider).prepare_book(
+            [("One", source)], book_title="Example"
         )
-        edits.append(
-            {
-                "sentence": sentence,
-                "category": "bibliographic_citation",
-                "original": match.group(0),
-                "replacement": "",
-                "reason": "Visual-only sourcing is difficult to listen to.",
-            }
+
+        unit = book.chapters[0].units[0]
+        self.assertEqual(unit.prepared_text, "The finding held under replication.")
+        self.assertEqual(len(unit.edits), 1)
+
+    def test_a_provider_cannot_smuggle_prose_past_the_edit_contract(self):
+        # The guarantee the boundary buys: an adapter has no channel for text
+        # at all, so an edit that will not anchor changes nothing, and the
+        # refusal is on the record instead of silently altering the book.
+        source = "The finding held under replication."
+
+        def propose(_request):
+            return PreparationResult(
+                edits=[
+                    PreparationEdit(
+                        category="rewrite",
+                        original="wording that is not in the passage",
+                        replacement="Something else entirely.",
+                        sentence=1,
+                    )
+                ]
+            )
+
+        book = NarrationPreparationPipeline(FakeProvider(transform=propose)).prepare_book(
+            [("One", source)], book_title="Example"
         )
-    return edits
+
+        unit = book.chapters[0].units[0]
+        self.assertEqual(unit.prepared_text, source)
+        self.assertEqual(unit.edits, [])
+        self.assertIn("nowhere in the passage", unit.warnings[0])
 
 
-class EditApplicationTests(unittest.TestCase):
-    PASSAGE = (
-        "Kahneman and Tversky (1979) showed that losses loom larger.[3] "
-        "The effect survived replication.\n\n"
-        "Later work qualified the size of the asymmetry (Gal 2006)."
+class DisplayLineTests(unittest.TestCase):
+    """Front matter is narrated verbatim, so it never costs a provider call."""
+
+    FRONT_MATTER = (
+        "THORNS OF REGRET\n\nBy\n\nMrs. Alex. McVeigh Miller\n\n"
+        "STREET & SMITH CORPORATION PUBLISHERS 79-89 Seventh Avenue, New York\n\n"
+        "Copyright, 1899 By Norman L. Munro"
     )
 
-    def test_a_passage_with_no_edits_is_returned_byte_identical(self):
-        prepared, applied, warnings = apply_edits(self.PASSAGE, [])
-
-        self.assertEqual(prepared, self.PASSAGE)
-        self.assertEqual((applied, warnings), ([], []))
-
-    def test_numbering_matches_the_spans_edits_are_anchored_to(self):
-        spans = sentence_spans(self.PASSAGE)
-        view = numbered_view(self.PASSAGE)
-
-        self.assertEqual(len(spans), 3)
-        for number, (start, end) in enumerate(spans, start=1):
-            self.assertIn(f"{number}: {self.PASSAGE[start:end]}", view)
-        # The paragraph break survives as a blank line, so the model can see
-        # that sentence 3 begins a new paragraph.
-        self.assertIn("\n\n3: ", view)
-        # The label must not look like the "[n]" reference markers the model
-        # is told to delete, or it proposes deleting the labels themselves.
-        # The passage's own "[3]" footnote marker must survive untouched.
-        self.assertTrue(
-            all(re.fullmatch(r"\d+: .*", line) for line in view.split("\n") if line)
-        )
-        self.assertIn("larger.[3]", view)
-
-    def test_deletions_close_up_the_spacing_they_leave_behind(self):
-        prepared, applied, warnings = apply_edits(
-            self.PASSAGE,
-            [
-                PreparationEdit(
-                    category="citation", original="(1979)", replacement="", sentence=1
-                ),
-                PreparationEdit(
-                    category="marker", original="[3]", replacement="", sentence=1
-                ),
-                PreparationEdit(
-                    category="citation", original=" (Gal 2006)", replacement="", sentence=3
-                ),
-            ],
+    def test_laid_out_lines_are_classified_apart_from_prose(self):
+        prose = (
+            "The day came when, through her inability to cope with the keen, "
+            "avaricious man of business, he became owner of everything."
         )
 
-        self.assertEqual(warnings, [])
-        self.assertEqual(len(applied), 3)
+        units = segment_text(normalize_text(f"{self.FRONT_MATTER}\n\n{prose}"))
+
         self.assertEqual(
-            prepared,
-            "Kahneman and Tversky showed that losses loom larger. "
-            "The effect survived replication.\n\n"
-            "Later work qualified the size of the asymmetry.",
+            [unit.kind for unit in units],
+            ["display_line"] * 5 + ["prose"],
+        )
+        self.assertEqual(units[-1].text, prose)
+
+    def test_a_dialogue_lead_in_is_prose_however_short(self):
+        # The distinction that matters on a novel: a colon ends a line that
+        # introduces speech, and there are hundreds of them.
+        for line in ("He laughed mockingly:", "She said hoarsely:"):
+            with self.subTest(line):
+                self.assertFalse(is_display_line(line))
+        for line in ("AUTHOR OF", "Yours truly,", "OR,"):
+            with self.subTest(line):
+                self.assertTrue(is_display_line(line))
+
+    def test_display_lines_reach_the_artifact_without_a_provider_call(self):
+        provider = FakeProvider()
+        pipeline = NarrationPreparationPipeline(provider)
+
+        book = pipeline.prepare_book(
+            [("Front Matter", self.FRONT_MATTER)], book_title="Example"
         )
 
-    def test_a_misquoted_original_is_dropped_and_the_source_survives(self):
-        prepared, applied, warnings = apply_edits(
-            self.PASSAGE,
-            [
-                PreparationEdit(
-                    category="citation",
-                    original="(Kahneman 1979)",
-                    replacement="",
-                    sentence=1,
-                )
-            ],
-        )
-
-        self.assertEqual(prepared, self.PASSAGE)
-        self.assertEqual(applied, [])
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("nowhere in the passage", warnings[0])
-
-    def test_typographic_differences_in_the_quote_still_anchor(self):
-        source = 'She said “it was over” — plainly (Reed 1998).'
-
-        prepared, applied, _warnings = apply_edits(
-            source,
-            [
-                PreparationEdit(
-                    category="citation",
-                    original=' (Reed 1998)',
-                    replacement="",
-                    sentence=1,
-                ),
-                PreparationEdit(
-                    category="notation",
-                    original='"it was over" -',
-                    replacement="it was over,",
-                    sentence=1,
-                ),
-            ],
-        )
-
-        self.assertEqual(len(applied), 2)
-        self.assertEqual(prepared, "She said it was over, plainly.")
-
-    def test_an_ambiguous_original_is_refused_rather_than_guessed_at(self):
-        source = "He read (1994) and she read (1994) that winter."
-
-        prepared, applied, warnings = apply_edits(
-            source,
-            [
-                PreparationEdit(
-                    category="citation", original="(1994)", replacement="", sentence=1
-                )
-            ],
-        )
-
-        self.assertEqual(prepared, source)
-        self.assertEqual(applied, [])
-        self.assertIn("more than once", warnings[0])
-
-    def test_an_off_by_one_anchor_recovers_when_the_wording_is_unique(self):
-        # Down a column of dialogue a 12B model reliably slips a line; the
-        # quoted text is unambiguous, so refusing it over the number would
-        # discard a good edit for a clerical error.
-        prepared, applied, warnings = apply_edits(
-            self.PASSAGE,
-            [
-                PreparationEdit(
-                    category="citation",
-                    original="(Gal 2006)",
-                    replacement="",
-                    sentence=2,  # actually sentence 3
-                )
-            ],
-        )
-
-        self.assertEqual(warnings, [])
-        self.assertEqual(len(applied), 1)
-        # The record shows where the edit landed, not the model's miscount.
-        self.assertEqual(applied[0].sentence, 3)
-        self.assertNotIn("Gal 2006", prepared)
-
-    def test_a_misanchored_edit_whose_wording_repeats_elsewhere_is_refused(self):
-        source = (
-            "The word garden appears here. It names a garden of another kind. "
-            "The third sentence mentions no such place at all."
-        )
-
-        prepared, applied, warnings = apply_edits(
-            source,
-            [
-                PreparationEdit(
-                    category="artifact",
-                    original="garden",
-                    replacement="orchard",
-                    sentence=3,
-                )
-            ],
-        )
-
-        self.assertEqual(prepared, source)
-        self.assertEqual(applied, [])
-        self.assertIn("more than one other sentence", warnings[0])
-
-    def test_wording_the_model_invented_is_reported_as_nowhere(self):
-        prepared, applied, warnings = apply_edits(
-            self.PASSAGE,
-            [
-                PreparationEdit(
-                    category="visual_notation",
-                    original="“The effect survived replication.”",
-                    replacement="The effect survived replication.",
-                    sentence=2,
-                )
-            ],
-        )
-
-        # The source has no quotation marks there: the model fabricated them,
-        # and a fabricated original must not fuzzy-match its way into a splice.
-        self.assertEqual(prepared, self.PASSAGE)
-        self.assertEqual(applied, [])
-        self.assertIn("nowhere in the passage", warnings[0])
-
-    def test_a_quote_that_includes_its_view_label_still_anchors(self):
-        # gemma quotes the line as it saw it, label and all. The label is our
-        # own injection into the prompt, so removing it restores the model's
-        # words rather than guessing at them.
-        prepared, applied, warnings = apply_edits(
-            self.PASSAGE,
-            [
-                PreparationEdit(
-                    category="citation",
-                    original="3: Later work qualified the size of the asymmetry (Gal 2006).",
-                    replacement="Later work qualified the size of the asymmetry.",
-                    sentence=3,
-                )
-            ],
-        )
-
-        self.assertEqual(warnings, [])
-        self.assertEqual(len(applied), 1)
-        self.assertTrue(prepared.endswith("asymmetry."))
-        self.assertIn("\n\n", prepared)
-
-    def test_edits_aimed_at_the_labels_themselves_are_ignored_in_bulk(self):
-        # The failure this format change fixes: a model told to delete "[n]"
-        # reference markers saw "[n]" labels and proposed deleting every one.
-        prepared, applied, warnings = apply_edits(
-            self.PASSAGE,
-            [
-                PreparationEdit(
-                    category="reference_marker",
-                    original=f"{number}:",
-                    replacement="",
-                    sentence=number,
-                )
-                for number in (1, 2, 3)
-            ],
-        )
-
-        self.assertEqual(prepared, self.PASSAGE)
-        self.assertEqual(applied, [])
-        # One aggregate line, not three near-identical ones: they say nothing
-        # about the book a reviewer has to judge.
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("Ignored 3 proposed edits", warnings[0])
-
-    def test_a_match_across_a_paragraph_break_is_refused(self):
-        # The folds map newlines to spaces for matching, so a quote spanning
-        # two paragraphs can locate — but splicing it would delete the break,
-        # the one piece of structure no edit may touch.
-        prepared, applied, warnings = apply_edits(
-            self.PASSAGE,
-            [
-                PreparationEdit(
-                    category="visual_notation",
-                    original="replication.\n\nLater work",
-                    replacement="replication. Later work",
-                    sentence=2,
-                )
-            ],
-        )
-
-        self.assertEqual(prepared, self.PASSAGE)
-        self.assertEqual(applied, [])
-        self.assertIn("crosses a paragraph break", warnings[0])
-
-    def test_deleting_a_long_run_of_prose_outright_is_refused(self):
-        # Deletion has no replacement for the retention check to inspect, so
-        # it gets its own ceiling; contrast with the preface test, where far
-        # longer deletions pass because they are citation-shaped.
-        sentence = (
-            "The committee recorded a series of objections that the author "
-            "considered essential to the argument and repeated at length."
-        )
-
-        prepared, applied, warnings = apply_edits(
-            sentence + " A second sentence stands here.",
-            [
-                PreparationEdit(
-                    category="extraction_artifact",
-                    original=sentence,
-                    replacement="",
-                    sentence=1,
-                )
-            ],
-        )
-
-        self.assertIn(sentence, prepared)
-        self.assertEqual(applied, [])
-        self.assertIn("deletes 122 characters of prose outright", warnings[0])
-
-    def test_a_long_span_rewrite_that_discards_the_authors_words_is_refused(self):
-        sentence = (
-            "The experiment continued for eleven further weeks despite the "
-            "objections recorded by the committee in its interim report."
-        )
-
-        _prepared, applied, warnings = apply_edits(
-            sentence,
-            [
-                PreparationEdit(
-                    category="visual_notation",
-                    original=sentence,
-                    replacement="The study went on for months over objections.",
-                    sentence=1,
-                )
-            ],
-        )
-
-        self.assertEqual(applied, [])
-        self.assertIn("paraphrase rather than adaptation", warnings[0])
-
-    def test_overlapping_edits_keep_the_first_and_report_the_second(self):
-        prepared, applied, warnings = apply_edits(
-            self.PASSAGE,
-            [
-                PreparationEdit(
-                    category="citation", original="(1979)", replacement="", sentence=1
-                ),
-                PreparationEdit(
-                    category="citation",
-                    original="Tversky (1979) showed",
-                    replacement="Tversky showed",
-                    sentence=1,
-                ),
-            ],
-        )
-
-        self.assertEqual(len(applied), 1)
-        self.assertIn("overlaps an earlier edit", warnings[0])
-        self.assertIn("Kahneman and Tversky showed", prepared)
-
-    def test_a_nonsense_anchor_still_recovers_unique_wording(self):
-        # An anchor that does not even exist is the same clerical error as an
-        # off-by-one, so unique wording is still worth recovering; sentence=0
-        # additionally covers edits from pre-anchor artifacts.
-        for sentence in (9, 0, -1):
-            with self.subTest(sentence=sentence):
-                prepared, applied, warnings = apply_edits(
-                    self.PASSAGE,
-                    [
-                        PreparationEdit(
-                            category="c",
-                            original="losses",
-                            replacement="setbacks",
-                            sentence=sentence,
-                        )
-                    ],
-                )
-
-                self.assertEqual(warnings, [])
-                self.assertEqual(applied[0].sentence, 1)
-                self.assertIn("setbacks loom larger", prepared)
-
-    def test_edits_that_cannot_anchor_at_all_are_refused(self):
-        for edit, expected in (
-            (
-                PreparationEdit(category="c", original="", replacement="x", sentence=1),
-                "no original text",
-            ),
-            (
-                PreparationEdit(
-                    category="c", original="absent words", replacement="x", sentence=9
-                ),
-                "sentence 9 does not exist",
-            ),
-        ):
-            with self.subTest(original=edit.original):
-                prepared, applied, warnings = apply_edits(self.PASSAGE, [edit])
-
-                self.assertEqual(prepared, self.PASSAGE)
-                self.assertEqual(applied, [])
-                self.assertEqual(len(warnings), 1)
-                self.assertIn(expected, warnings[0])
-
-    def test_a_rewrite_wearing_an_edits_clothes_is_refused(self):
-        source = "A" * 500 + ". A short second sentence."
-
-        _prepared, applied, warnings = apply_edits(
-            source,
-            [
-                PreparationEdit(
-                    category="rewrite",
-                    original="A" * 500,
-                    replacement="Something else entirely.",
-                    sentence=1,
-                )
-            ],
-        )
-
-        self.assertEqual(applied, [])
-        self.assertIn("more than the 400", warnings[0])
-
-    def test_an_inflating_replacement_is_refused(self):
-        _prepared, applied, warnings = apply_edits(
-            self.PASSAGE,
-            [
-                PreparationEdit(
-                    category="expansion",
-                    original="losses",
-                    replacement="losses, which is to say the perceived forfeiture of "
-                    "something already held, a notion the authors return to",
-                    sentence=1,
-                )
-            ],
-        )
-
-        self.assertEqual(applied, [])
-        self.assertIn("adds rather than adapts", warnings[0])
-
-    def test_rewriting_prose_wholesale_runs_out_of_budget(self):
-        sentences = [f"Sentence {number:02d} of the passage stands here." for number in range(20)]
-        source = " ".join(sentences)
-        # No slack, so the budget is exactly a quarter of the passage and the
-        # arithmetic in the assertion is the policy, not a coincidence.
-        policy = ValidationPolicy(maximum_edited_fraction=0.25, edited_slack_chars=0)
-        affordable = int(len(source) * 0.25) // len(sentences[0])
-        rewrites = [
-            PreparationEdit(
-                category="rewrite",
-                original=sentence,
-                replacement=f"Sentence {number:02d} stands here.",
-                sentence=number + 1,
-            )
-            for number, sentence in enumerate(sentences)
-        ]
-
-        _prepared, applied, warnings = apply_edits(source, rewrites, policy=policy)
-
-        self.assertEqual(len(applied), affordable)
-        self.assertEqual(len(warnings), len(sentences) - affordable)
-        self.assertTrue(all("rewrite 25%" in warning for warning in warnings))
-
-    def test_a_citation_dense_passage_is_not_capped_by_the_budget(self):
-        source = normalize_text(PREFACE_SOURCE)
-
-        prepared, applied, warnings = apply_edits(
-            source,
-            [PreparationEdit.from_dict(item) for item in _citation_edits(source)],
-        )
-
-        self.assertEqual(warnings, [])
-        self.assertEqual(len(applied), 3)
-        self.assertEqual(prepared, PREFACE_PREPARED)
+        self.assertEqual(provider.calls, [])
+        units = book.chapters[0].units
+        self.assertTrue(all(unit.kind == "display_line" for unit in units))
+        self.assertTrue(all(unit.prepared_text == unit.source_text for unit in units))
+        self.assertEqual(book.chapters[0].prepared_text, self.FRONT_MATTER)
 
 
 class PreparationValidationTests(unittest.TestCase):
     def test_preface_citation_lists_are_removed_by_a_fake_provider(self):
         def adapt(request):
             return parse_structured_response(
-                request,
-                {
-                    "edits": _citation_edits(request.source_text),
-                    "warnings": [],
-                },
+                {"edits": citation_edits(request.source_text), "warnings": []}
             )
 
         provider = FakeProvider(transform=adapt)
@@ -703,14 +264,12 @@ class PreparationValidationTests(unittest.TestCase):
                 "important to the argument and its stated qualification."
             ),
         )
-        result = PreparationResult(
-            prepared_text=(
-                "The finding remained important to the argument and its stated "
-                "qualification."
-            )
+        prepared = (
+            "The finding remained important to the argument and its stated "
+            "qualification."
         )
 
-        report = validate_preparation(request, result)
+        report = validate_preparation(request.source_text, prepared)
 
         self.assertEqual(report.lexical_retention, 1.0)
 
@@ -719,10 +278,7 @@ class PreparationValidationTests(unittest.TestCase):
         request = PreparationRequest(chapter_title="Chapter One", source_text=source)
 
         with self.assertRaises(PreparationValidationError) as raised:
-            validate_preparation(
-                request,
-                PreparationResult(prepared_text="In summary, " + source),
-            )
+            validate_preparation(request.source_text, "In summary, " + source)
 
         self.assertTrue(
             any("summary-style" in issue for issue in raised.exception.issues)
@@ -735,7 +291,7 @@ class PreparationValidationTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(PreparationValidationError, "blank"):
-            validate_preparation(request, PreparationResult(prepared_text=" \n "))
+            validate_preparation(request.source_text, " \n ")
 
 
 class ArtifactTests(unittest.TestCase):
@@ -950,12 +506,15 @@ class OllamaProviderTests(unittest.TestCase):
         self.assertEqual(payload["model"], "gemma4:31b")
         self.assertIn("1: A clean passage", payload["messages"][1]["content"])
         self.assertNotIn("prepared_text", payload["format"]["properties"])
-        # The passage is the source with the edit spliced out, not anything the
-        # model retyped: it never sent prose back at all.
-        self.assertEqual(result.prepared_text, "A clean passage.")
+        # A provider reports what the model proposed and nothing more: no
+        # prepared prose, because deciding what the passage becomes is the
+        # pipeline's job and must not vary by adapter.
+        self.assertFalse(hasattr(result, "prepared_text"))
         self.assertEqual(result.edits[0].category, "citation")
         self.assertEqual(result.edits[0].sentence, 1)
+        self.assertEqual(result.edits[0].original, "(Smith 1999)")
         self.assertEqual(result.warnings, ["Fixture warning"])
+        self.assertEqual(result.provider_metadata.model, "gemma4:31b")
 
     def test_malformed_transport_and_structured_json_are_rejected(self):
         provider = OllamaProvider(unload_on_close=False)

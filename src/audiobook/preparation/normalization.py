@@ -6,6 +6,16 @@ import re
 import unicodedata
 
 
+# A paragraph at or under this length that does not end like a sentence is
+# treated as a laid-out line rather than prose. Measured against a full novel,
+# this separates a title page, two letter sign-offs, and nothing else from
+# 1941 paragraphs of narrative.
+DISPLAY_LINE_MAX_CHARS = 80
+# Punctuation that marks a block as running prose. A colon counts: a short line
+# ending in one is a dialogue lead-in ("He laughed mockingly:"), of which a
+# novel has hundreds, and they are prose in every sense that matters here.
+PROSE_ENDINGS = (".", "!", "?", ":", ";", "”", '"', "’", "'")
+
 MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}(?:\s+|$)\S?.*$")
 SCENE_MARKER_RE = re.compile(
     r"^\s*(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,}|(?:~\s*){3,})\s*$"
@@ -26,6 +36,27 @@ def is_scene_marker(text: str) -> bool:
     """Return whether a block is an explicit Markdown scene divider."""
 
     return bool(SCENE_MARKER_RE.fullmatch(text.strip()))
+
+
+def is_display_line(text: str) -> bool:
+    """Return whether a block is a laid-out line rather than a sentence.
+
+    Title pages, bylines, publisher imprints, and letter sign-offs are set as
+    their own short paragraphs and read as labels, not prose. They are narrated
+    exactly as written, so there is nothing for a model to adapt — and asking
+    it to try is actively harmful: every line of a title page is short enough
+    that trimming one empties its paragraph, and a model handed "AUTHOR OF"
+    will reliably propose deleting it.
+
+    The test is deliberately blunt — short, and not ending like a sentence —
+    because a false positive costs nothing (the text is narrated verbatim
+    either way) while a false negative sends front matter back to the model.
+    """
+
+    stripped = text.strip()
+    return bool(stripped) and len(stripped) <= DISPLAY_LINE_MAX_CHARS and not (
+        stripped.endswith(PROSE_ENDINGS)
+    )
 
 
 def _logical_blocks(text: str) -> list[str]:

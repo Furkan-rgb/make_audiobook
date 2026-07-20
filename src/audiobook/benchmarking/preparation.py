@@ -239,13 +239,7 @@ def _quality_metrics(book: PreparedBook) -> QualityMetrics:
     reports = []
     for chapter_title, unit in prose_units:
         reports.append(
-            validate_preparation(
-                PreparationRequest(
-                    chapter_title=chapter_title,
-                    source_text=unit.source_text,
-                ),
-                PreparationResult(prepared_text=unit.prepared_text),
-            )
+            validate_preparation(unit.source_text, unit.prepared_text)
         )
 
     source_text = "\n\n".join(unit.source_text for _title, unit in prose_units)

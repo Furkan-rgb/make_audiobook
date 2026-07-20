@@ -1,5 +1,27 @@
-"""Prepare extracted prose for faithful, listenable audiobook narration."""
+"""Prepare extracted prose for faithful, listenable audiobook narration.
 
+The stage in one line: normalize the extracted text, cut it into units, ask a
+model for the *edits* each prose unit needs, apply them deterministically, and
+save a reviewable artifact.
+
+Where things live:
+
+- :mod:`normalization` and :mod:`segmentation` shape raw text into units, and
+  decide which of them are prose worth sending to a model at all.
+- :mod:`adaptation` owns the edits-only contract end to end: addressing a
+  passage, anchoring a quoted edit in it, and splicing the survivors in.
+- :mod:`validation` holds the thresholds, measured in words with citations
+  masked out, plus the passage-level checks.
+- :mod:`prompting` is the wire format; :mod:`providers` are transports.
+- :mod:`pipeline` orchestrates, caches, and checkpoints; :mod:`artifacts`
+  hashes and persists.
+
+The layering rule worth keeping: providers parse, the pipeline decides. No
+adapter applies edits, so two providers given identical model output cannot
+produce different prose.
+"""
+
+from .adaptation import apply_edits, numbered_view, resolve_edit, sentence_spans
 from .artifacts import (
     ArtifactValidationError,
     atomic_save_prepared_book,
@@ -13,8 +35,8 @@ from .artifacts import (
     source_metadata_for_path,
     validate_artifact,
 )
-from .editing import apply_edits, numbered_view, resolve_edit, sentence_spans
 from .normalization import (
+    is_display_line,
     is_markdown_heading,
     is_scene_marker,
     normalize_paragraph,
@@ -38,8 +60,8 @@ from .providers import (
     NarrationPreparationProvider,
     OllamaProvider,
     ProviderDescriptor,
-    ProviderFactory,
     ProviderError,
+    ProviderFactory,
     ProviderResponseError,
     ProviderUnavailableError,
     available_providers,
@@ -59,12 +81,12 @@ from .types import (
     DEFAULT_POLICY,
     DEFAULT_PROMPT_VERSION,
     SCHEMA_VERSION,
-    PreparedBook,
-    PreparedChapter,
-    PreparedUnit,
     PreparationEdit,
     PreparationRequest,
     PreparationResult,
+    PreparedBook,
+    PreparedChapter,
+    PreparedUnit,
     ProviderMetadata,
     SourceMetadata,
     UnitKind,
@@ -73,72 +95,85 @@ from .validation import (
     PreparationValidationError,
     ValidationPolicy,
     ValidationReport,
+    lexical_retention,
     mask_citations,
+    validate_edit,
     validate_preparation,
+    words_changed,
 )
 
 __all__ = [
-    "ArtifactValidationError",
-    "CheckpointCallback",
-    "DEFAULT_CONTEXT_CHARS",
-    "DEFAULT_MAX_UNIT_CHARS",
-    "DEFAULT_OLLAMA_BASE_URL",
-    "DEFAULT_OLLAMA_MODEL",
+    # Data contracts
     "DEFAULT_POLICY",
     "DEFAULT_PROMPT_VERSION",
-    "DEFAULT_TARGET_UNIT_CHARS",
-    "NarrationPreparationPipeline",
-    "NarrationPreparationProvider",
-    "OllamaProvider",
-    "ProviderDescriptor",
-    "ProviderFactory",
+    "SCHEMA_VERSION",
     "PreparationEdit",
-    "PreparationPipeline",
     "PreparationRequest",
     "PreparationResult",
-    "PreparationValidationError",
     "PreparedBook",
     "PreparedChapter",
     "PreparedUnit",
-    "ProviderError",
     "ProviderMetadata",
-    "ProviderResponseError",
-    "ProviderUnavailableError",
-    "RESPONSE_JSON_SCHEMA",
-    "SCHEMA_VERSION",
-    "SYSTEM_PROMPT",
     "SourceMetadata",
     "SourceUnit",
     "UnitKind",
+    # Shaping text into units
+    "DEFAULT_CONTEXT_CHARS",
+    "DEFAULT_MAX_UNIT_CHARS",
+    "DEFAULT_TARGET_UNIT_CHARS",
+    "is_display_line",
+    "is_markdown_heading",
+    "is_scene_marker",
+    "normalize_paragraph",
+    "normalize_text",
+    "segment_text",
+    # The edits-only adaptation contract
+    "apply_edits",
+    "numbered_view",
+    "resolve_edit",
+    "sentence_spans",
+    # Limits and checks
+    "PreparationValidationError",
     "ValidationPolicy",
     "ValidationReport",
-    "apply_edits",
-    "atomic_save_prepared_book",
-    "available_providers",
+    "lexical_retention",
+    "mask_citations",
+    "validate_edit",
+    "validate_preparation",
+    "words_changed",
+    # Asking a model
+    "RESPONSE_JSON_SCHEMA",
+    "SYSTEM_PROMPT",
     "build_messages",
+    "parse_structured_response",
+    "DEFAULT_OLLAMA_BASE_URL",
+    "DEFAULT_OLLAMA_MODEL",
+    "NarrationPreparationProvider",
+    "OllamaProvider",
+    "ProviderDescriptor",
+    "ProviderError",
+    "ProviderFactory",
+    "ProviderResponseError",
+    "ProviderUnavailableError",
+    "available_providers",
     "create_provider",
     "provider_descriptor",
     "provider_descriptors",
-    "is_markdown_heading",
-    "is_scene_marker",
-    "load_prepared_book",
-    "mask_citations",
-    "normalize_paragraph",
-    "normalize_text",
-    "numbered_view",
-    "parse_structured_response",
-    "prepare_book",
-    "refresh_hashes",
     "register_provider",
+    # Running and persisting a book
+    "CheckpointCallback",
+    "NarrationPreparationPipeline",
+    "PreparationPipeline",
+    "prepare_book",
+    "ArtifactValidationError",
+    "atomic_save_prepared_book",
+    "load_prepared_book",
+    "refresh_hashes",
     "render_prepared_markdown",
-    "resolve_edit",
     "save_prepared_book",
     "save_prepared_markdown",
-    "segment_text",
-    "sentence_spans",
     "sha256_file",
     "sha256_text",
     "source_metadata_for_path",
     "validate_artifact",
-    "validate_preparation",
 ]

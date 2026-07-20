@@ -6,8 +6,8 @@ from dataclasses import dataclass
 import re
 from typing import Sequence
 
-from .editing import sentence_spans
-from .normalization import is_markdown_heading, is_scene_marker
+from .adaptation.spans import sentence_spans
+from .normalization import is_display_line, is_markdown_heading, is_scene_marker
 from .types import UnitKind
 
 
@@ -18,7 +18,12 @@ DEFAULT_CONTEXT_CHARS = 600
 
 @dataclass(frozen=True)
 class SourceUnit:
-    """A deterministic unit; only ``prose`` units are sent to a provider."""
+    """One deterministically cut piece of a chapter.
+
+    Only ``prose`` units are sent to a provider. Headings, scene markers, and
+    display lines — bylines, imprints, letter sign-offs — are narrated exactly
+    as written, so there is nothing to adapt and nothing to spend a call on.
+    """
 
     position: int
     kind: UnitKind
@@ -97,7 +102,7 @@ def segment_text(
     max_chars: int = DEFAULT_MAX_UNIT_CHARS,
     context_chars: int = DEFAULT_CONTEXT_CHARS,
 ) -> list[SourceUnit]:
-    """Create provider-sized prose units and passthrough structural units."""
+    """Cut normalized text into provider-sized prose and passthrough units."""
 
     if target_chars <= 0 or max_chars < target_chars:
         raise ValueError("Unit sizes must satisfy 0 < target_chars <= max_chars")
@@ -127,6 +132,9 @@ def segment_text(
         elif is_scene_marker(block):
             flush_prose()
             raw_units.append(("scene_marker", block))
+        elif is_display_line(block):
+            flush_prose()
+            raw_units.append(("display_line", block))
         else:
             pending_prose.append(block)
     flush_prose()

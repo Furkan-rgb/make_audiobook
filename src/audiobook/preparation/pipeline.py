@@ -7,6 +7,7 @@ import hashlib
 import json
 from typing import Callable, Sequence
 
+from .adaptation import apply_edits
 from .artifacts import refresh_hashes, validate_artifact
 from .normalization import normalize_text
 from .providers.base import NarrationPreparationProvider
@@ -23,7 +24,6 @@ from .types import (
     PreparedChapter,
     PreparedUnit,
     PreparationRequest,
-    PreparationResult,
     SourceMetadata,
 )
 from .validation import ValidationPolicy, validate_preparation
@@ -225,14 +225,10 @@ class NarrationPreparationPipeline:
                 cache_key = self._cache_key(request)
                 cached = cache.get(cache_key)
                 if cached is not None:
-                    cached_result = PreparationResult(
-                        prepared_text=cached.prepared_text,
-                        edits=deepcopy(cached.edits),
-                        warnings=list(cached.warnings),
-                        provider_metadata=cached.provider_metadata,
-                    )
                     validate_preparation(
-                        request, cached_result, policy=self.validation_policy
+                        segment.text,
+                        cached.prepared_text,
+                        policy=self.validation_policy,
                     )
                     unit = deepcopy(cached)
                     unit.unit_id = unit_id
@@ -245,18 +241,25 @@ class NarrationPreparationPipeline:
                         self.provider.check_available()
                         availability_checked = True
                     result = self.provider.prepare(request)
+                    # The provider proposed; the pipeline disposes. Applying
+                    # here — rather than in each adapter — is what guarantees
+                    # that identical model output yields identical prose no
+                    # matter which provider produced it.
+                    prepared_text, applied, refusals = apply_edits(
+                        segment.text, result.edits, policy=self.validation_policy
+                    )
                     validate_preparation(
-                        request, result, policy=self.validation_policy
+                        segment.text, prepared_text, policy=self.validation_policy
                     )
                     unit = PreparedUnit(
                         unit_id=unit_id,
                         position=segment.position,
                         kind="prose",
                         source_text=segment.text,
-                        prepared_text=result.prepared_text.strip(),
+                        prepared_text=prepared_text.strip(),
                         cache_key=cache_key,
-                        edits=result.edits,
-                        warnings=result.warnings,
+                        edits=applied,
+                        warnings=[*result.warnings, *refusals],
                         provider_metadata=(
                             result.provider_metadata or self.provider.metadata
                         ),

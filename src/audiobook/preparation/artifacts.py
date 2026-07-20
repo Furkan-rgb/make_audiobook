@@ -128,7 +128,7 @@ def validate_artifact(book: PreparedBook) -> None:
             if not unit.unit_id or unit.unit_id in unit_ids:
                 issues.append(f"duplicate or blank unit_id for {unit_label}")
             unit_ids.add(unit.unit_id)
-            if unit.kind not in {"prose", "heading", "scene_marker"}:
+            if unit.kind not in {"prose", "heading", "scene_marker", "display_line"}:
                 issues.append(f"invalid kind for {unit_label}: {unit.kind!r}")
             if not unit.source_text.strip() or not unit.prepared_text.strip():
                 issues.append(f"blank source or prepared text for {unit_label}")

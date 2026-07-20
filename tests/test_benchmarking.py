@@ -51,7 +51,6 @@ class BenchmarkFakeProvider:
         if self.fail:
             raise RuntimeError("fixture model failure")
         return PreparationResult(
-            prepared_text=PREPARED if self.model == "model-small" else request.source_text,
             edits=(
                 [
                     PreparationEdit(

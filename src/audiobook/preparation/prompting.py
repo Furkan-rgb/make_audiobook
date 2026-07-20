@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 
-from .editing import apply_edits, numbered_view
+from .adaptation import numbered_view
 from .types import (
     DEFAULT_PROMPT_VERSION,
     PreparationEdit,
     PreparationRequest,
     PreparationResult,
 )
-from .validation import ValidationPolicy
 
 
 RESPONSE_JSON_SCHEMA: dict[str, object] = {
@@ -117,17 +116,12 @@ def build_messages(request: PreparationRequest) -> list[dict[str, str]]:
     ]
 
 
-def parse_structured_response(
-    request: PreparationRequest,
-    payload: object,
-    *,
-    policy: ValidationPolicy | None = None,
-) -> PreparationResult:
-    """Turn a provider's edits-only JSON into a prepared passage.
+def parse_structured_response(payload: object) -> PreparationResult:
+    """Read a provider's edits-only JSON into proposed edits and warnings.
 
-    Every adapter goes through here, so the source text is spliced in exactly
-    one place and a refused edit becomes a visible warning everywhere rather
-    than a silently different result per provider.
+    Parsing is all a provider does with the model's answer. What the passage
+    becomes is decided once, by the pipeline, so that no adapter can apply
+    edits in its own subtly different way.
     """
 
     if not isinstance(payload, dict):
@@ -143,13 +137,7 @@ def parse_structured_response(
     ):
         raise ValueError("Structured response warnings must be strings")
 
-    prepared_text, applied, rejections = apply_edits(
-        request.source_text,
-        [PreparationEdit.from_dict(item) for item in edits_payload],
-        policy=policy,
-    )
     return PreparationResult(
-        prepared_text=prepared_text,
-        edits=applied,
-        warnings=[*warnings_payload, *rejections],
+        edits=[PreparationEdit.from_dict(item) for item in edits_payload],
+        warnings=list(warnings_payload),
     )

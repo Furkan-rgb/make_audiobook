@@ -20,7 +20,6 @@ from ..types import (
     PreparationResult,
     ProviderMetadata,
 )
-from ..validation import ValidationPolicy
 from .base import ProviderDescriptor, ProviderResponseError, ProviderUnavailableError
 
 
@@ -119,7 +118,6 @@ class OllamaProvider:
         keep_alive: str | int = "10m",
         unload_on_close: bool = True,
         prompt_version: str = DEFAULT_PROMPT_VERSION,
-        validation_policy: ValidationPolicy | None = None,
         auto_pull: bool = True,
         pull_timeout: float = DEFAULT_PULL_TIMEOUT_SECONDS,
         on_pull_progress: PullProgress | None = None,
@@ -145,10 +143,6 @@ class OllamaProvider:
         self.keep_alive = keep_alive
         self.unload_on_close = unload_on_close
         self.prompt_version = prompt_version
-        # Bounds how much of a passage one edit may touch. The pipeline holds
-        # its own copy for the whole-passage backstop; both default to the same
-        # thresholds, and a caller changing one should change the other.
-        self.validation_policy = validation_policy or ValidationPolicy()
         self.auto_pull = auto_pull
         self.pull_timeout = pull_timeout
         self.on_pull_progress = on_pull_progress or _default_pull_progress
@@ -374,9 +368,7 @@ class OllamaProvider:
                 "Ollama message.content did not satisfy the JSON output contract"
             ) from exc
         try:
-            result = parse_structured_response(
-                request, payload, policy=self.validation_policy
-            )
+            result = parse_structured_response(payload)
         except ValueError as exc:
             raise ProviderResponseError(str(exc)) from exc
         result.provider_metadata = self.metadata
