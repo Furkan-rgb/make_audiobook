@@ -1,23 +1,47 @@
 # Audiobook Studio
 
-Convert a book — PDF or EPUB — into a prepared narration script, review it, and
-then generate a chaptered `.m4b` audiobook with Qwen3-TTS. The narrator can be a built-in
-speaker or a bespoke voice you design yourself (see
-[Custom narrator voice](#custom-narrator-voice)); runs default to the
-designed `warm_male` voice.
+Turn a book — PDF or EPUB — into a chaptered `.m4b` audiobook, narrated by a
+voice you control. Three capabilities are the heart of the project:
 
-The workflow deliberately separates editorial preparation from speech
-generation:
+- **Design a voice.** Describe a narrator in plain language — *"a soft-spoken
+  woman in her thirties, warm and unhurried, neutral American accent"* — and the
+  Qwen3-TTS VoiceDesign model renders a reference clip you can keep and audition.
+- **Clone a voice.** Condition every line on a single reference clip — a designed
+  one, or a real recording of your own — so the narrator sounds *identical* from
+  the first chapter to the last.
+- **Narrate a book.** Extract the text, adapt it for the ear, and synthesize the
+  whole book in that voice, chapter by chapter, into a finished audiobook.
+
+Voice creation and book production are two independent tracks that meet at
+synthesis: design or clone a narrator once, then reuse it across any number of
+books. A run can also fall back to a built-in Qwen speaker (see
+[Custom narrator voice](#custom-narrator-voice)), but the designed, cloned
+narrator is the point.
+
+## Pipeline
+
+Each stage is its own package under `src/audiobook/`, with a narrow API and its
+own tests, so any stage can run and be inspected without the ones after it. The
+two tracks meet where `synthesis/` renders text in the chosen voice.
 
 ```text
-book extraction (PDF bookmarks or EPUB navigation)
-    → deterministic text normalization
-    → provider-neutral listening adaptation
-    → validated, reviewable prepared script
-    → semantic narration chunks
-    → Qwen3-TTS
-    → chaptered M4B
+BOOK PRODUCTION
+
+  extraction/    PDF bookmarks / EPUB navigation     ──►  chapters of clean text
+  preparation/   normalize + adapt text for the ear  ──►  reviewable prepared script
+  chunking/      group prose into semantic units     ──►  ~30–90 s TTS requests
+  synthesis/     Qwen3-TTS in the chosen voice       ──►  per-chunk audio
+  assembly/      crossfades + chapter markers        ──►  chaptered .m4b
+
+VOICE CREATION  (produces the narrator voice that synthesis/ clones)
+
+  design_voice.py   plain-language persona   ──►  reference clip in voices/<name>/
+  clone_voice.py    any reference clip       ──►  cloned narrator (audition / import)
 ```
+
+The book pipeline deliberately separates editorial preparation from speech
+generation, so the text is validated and reviewable *before* any GPU time is
+spent narrating it.
 
 ## Book extraction
 
