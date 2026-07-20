@@ -74,7 +74,8 @@ class FlaggedUnit:
     chapter_title: str
     source_text: str
     warnings: tuple[str, ...]
-    edits: tuple[tuple[str, str, str, str], ...]  # category, original, replacement, reason
+    # sentence, category, original, replacement, reason
+    edits: tuple[tuple[int, str, str, str, str], ...]
 
     @property
     def label(self) -> str:
@@ -112,7 +113,13 @@ def flagged_units(book: PreparedBook) -> list[FlaggedUnit]:
                     source_text=unit.source_text,
                     warnings=tuple(unit.warnings),
                     edits=tuple(
-                        (edit.category, edit.original, edit.replacement, edit.reason)
+                        (
+                            edit.sentence,
+                            edit.category,
+                            edit.original,
+                            edit.replacement,
+                            edit.reason,
+                        )
                         for edit in unit.edits
                     ),
                 )
@@ -146,14 +153,20 @@ def render_unit(unit: FlaggedUnit | None) -> str:
         lines.extend(f"- {warning}" for warning in unit.warnings)
         lines.append("")
     if unit.edits:
-        lines.append("| Category | Original | Replacement | Reason |")
-        lines.append("| --- | --- | --- | --- |")
-        for category, original, replacement, reason in unit.edits:
+        # Every edit here was applied: the prepared text is the source with
+        # exactly these splices in it.  Anything the model proposed that could
+        # not be placed was refused and appears above as a warning instead.
+        lines.append("| Sentence | Category | Original | Replacement | Reason |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for sentence, category, original, replacement, reason in unit.edits:
             cells = [
                 (value.replace("|", "\\|").replace("\n", " ") or "—")
                 for value in (category, original, replacement, reason)
             ]
-            lines.append(f"| {cells[0]} | {cells[1]} | {cells[2]} | {cells[3]} |")
+            anchor = str(sentence) if sentence else "—"
+            lines.append(
+                f"| {anchor} | {cells[0]} | {cells[1]} | {cells[2]} | {cells[3]} |"
+            )
     elif not unit.warnings:
         lines.append("_No edits recorded._")
     return "\n".join(lines)

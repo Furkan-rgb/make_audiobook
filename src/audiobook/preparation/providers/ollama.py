@@ -9,14 +9,18 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from ..prompting import RESPONSE_JSON_SCHEMA, build_messages
+from ..prompting import (
+    RESPONSE_JSON_SCHEMA,
+    build_messages,
+    parse_structured_response,
+)
 from ..types import (
     DEFAULT_PROMPT_VERSION,
-    PreparationEdit,
     PreparationRequest,
     PreparationResult,
     ProviderMetadata,
 )
+from ..validation import ValidationPolicy
 from .base import ProviderDescriptor, ProviderResponseError, ProviderUnavailableError
 
 
@@ -107,10 +111,15 @@ class OllamaProvider:
         temperature: float = 0.0,
         seed: int = 42,
         num_ctx: int = 8192,
+        # A well-behaved response is a handful of short edits, far under this.
+        # The ceiling is a runaway guard, not a target, and a model that runs
+        # into it loses the whole unit to a truncated JSON string — so it stays
+        # generous even though the expected output shrank.
         num_predict: int = 4096,
         keep_alive: str | int = "10m",
         unload_on_close: bool = True,
         prompt_version: str = DEFAULT_PROMPT_VERSION,
+        validation_policy: ValidationPolicy | None = None,
         auto_pull: bool = True,
         pull_timeout: float = DEFAULT_PULL_TIMEOUT_SECONDS,
         on_pull_progress: PullProgress | None = None,
@@ -136,6 +145,10 @@ class OllamaProvider:
         self.keep_alive = keep_alive
         self.unload_on_close = unload_on_close
         self.prompt_version = prompt_version
+        # Bounds how much of a passage one edit may touch. The pipeline holds
+        # its own copy for the whole-passage backstop; both default to the same
+        # thresholds, and a caller changing one should change the other.
+        self.validation_policy = validation_policy or ValidationPolicy()
         self.auto_pull = auto_pull
         self.pull_timeout = pull_timeout
         self.on_pull_progress = on_pull_progress or _default_pull_progress
@@ -347,29 +360,27 @@ class OllamaProvider:
         try:
             payload = json.loads(content)
         except json.JSONDecodeError as exc:
+            # Truncation looks identical to malformed output once the JSON
+            # parser has failed, and the two need opposite responses: raise the
+            # ceiling, or distrust the model. Ollama says which one it was.
+            if response.get("done_reason") == "length":
+                raise ProviderResponseError(
+                    f"Ollama stopped {self.model!r} at the {self.num_predict}-token "
+                    "output limit, leaving the edit list unfinished. Raise "
+                    "num_predict, or shorten the prose units so each one needs "
+                    "fewer edits."
+                ) from exc
             raise ProviderResponseError(
                 "Ollama message.content did not satisfy the JSON output contract"
             ) from exc
-        if not isinstance(payload, dict) or not isinstance(
-            payload.get("prepared_text"), str
-        ):
-            raise ProviderResponseError("Structured response omitted prepared_text")
-        edits_payload = payload.get("edits", [])
-        warnings_payload = payload.get("warnings", [])
-        if not isinstance(edits_payload, list) or not all(
-            isinstance(item, dict) for item in edits_payload
-        ):
-            raise ProviderResponseError("Structured response edits must be an array")
-        if not isinstance(warnings_payload, list) or not all(
-            isinstance(item, str) for item in warnings_payload
-        ):
-            raise ProviderResponseError("Structured response warnings must be strings")
-        return PreparationResult(
-            prepared_text=payload["prepared_text"].strip(),
-            edits=[PreparationEdit.from_dict(item) for item in edits_payload],
-            warnings=warnings_payload,
-            provider_metadata=self.metadata,
-        )
+        try:
+            result = parse_structured_response(
+                request, payload, policy=self.validation_policy
+            )
+        except ValueError as exc:
+            raise ProviderResponseError(str(exc)) from exc
+        result.provider_metadata = self.metadata
+        return result
 
     def unload(self) -> None:
         if self._closed or not self._used:

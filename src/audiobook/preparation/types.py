@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 
 SCHEMA_VERSION = 1
-DEFAULT_PROMPT_VERSION = "narration-preparation-v1"
+DEFAULT_PROMPT_VERSION = "narration-preparation-v4"
 DEFAULT_POLICY = (
     "Adapt presentation for listening without summarizing, censoring, "
     "softening, modernizing, or otherwise changing the author's meaning."
@@ -114,28 +114,41 @@ class PreparationRequest:
 
 @dataclass(frozen=True)
 class PreparationEdit:
-    """An auditable material edit reported by the provider."""
+    """One adaptation, anchored to a sentence of the source passage.
+
+    ``sentence`` is a 1-based index into the numbered view the provider was
+    shown, and ``original`` must be copied verbatim from that sentence: an edit
+    that cannot be placed is dropped rather than guessed at. It defaults to 0 so
+    that artifacts written before edits carried an anchor still load.
+    """
 
     category: str
     original: str = ""
     replacement: str = ""
     reason: str = ""
+    sentence: int = 0
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, str | int]:
         return {
             "category": self.category,
             "original": self.original,
             "replacement": self.replacement,
             "reason": self.reason,
+            "sentence": self.sentence,
         }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PreparationEdit":
+        try:
+            sentence = int(payload.get("sentence", 0))
+        except (TypeError, ValueError):
+            sentence = 0
         return cls(
             category=str(payload.get("category", "unspecified")),
             original=str(payload.get("original", "")),
             replacement=str(payload.get("replacement", "")),
             reason=str(payload.get("reason", "")),
+            sentence=sentence,
         )
 
 

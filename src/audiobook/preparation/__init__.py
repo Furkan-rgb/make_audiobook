@@ -13,6 +13,7 @@ from .artifacts import (
     source_metadata_for_path,
     validate_artifact,
 )
+from .editing import apply_edits, numbered_view, resolve_edit, sentence_spans
 from .normalization import (
     is_markdown_heading,
     is_scene_marker,
@@ -25,7 +26,12 @@ from .pipeline import (
     PreparationPipeline,
     prepare_book,
 )
-from .prompting import RESPONSE_JSON_SCHEMA, SYSTEM_PROMPT, build_messages
+from .prompting import (
+    RESPONSE_JSON_SCHEMA,
+    SYSTEM_PROMPT,
+    build_messages,
+    parse_structured_response,
+)
 from .providers import (
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_OLLAMA_MODEL,
@@ -106,6 +112,7 @@ __all__ = [
     "UnitKind",
     "ValidationPolicy",
     "ValidationReport",
+    "apply_edits",
     "atomic_save_prepared_book",
     "available_providers",
     "build_messages",
@@ -118,13 +125,17 @@ __all__ = [
     "mask_citations",
     "normalize_paragraph",
     "normalize_text",
+    "numbered_view",
+    "parse_structured_response",
     "prepare_book",
     "refresh_hashes",
     "register_provider",
     "render_prepared_markdown",
+    "resolve_edit",
     "save_prepared_book",
     "save_prepared_markdown",
     "segment_text",
+    "sentence_spans",
     "sha256_file",
     "sha256_text",
     "source_metadata_for_path",

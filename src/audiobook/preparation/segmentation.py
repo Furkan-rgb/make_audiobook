@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import re
 from typing import Sequence
 
+from .editing import sentence_spans
 from .normalization import is_markdown_heading, is_scene_marker
 from .types import UnitKind
 
@@ -13,10 +14,6 @@ from .types import UnitKind
 DEFAULT_TARGET_UNIT_CHARS = 3_500
 DEFAULT_MAX_UNIT_CHARS = 6_000
 DEFAULT_CONTEXT_CHARS = 600
-
-_SENTENCE_BOUNDARY_RE = re.compile(
-    r"(?<=[.!?])(?:[\"'”’)]*)\s+(?=[A-Z0-9\"'“‘(\[])"
-)
 
 
 @dataclass(frozen=True)
@@ -31,8 +28,9 @@ class SourceUnit:
 
 
 def _split_sentences(paragraph: str) -> list[str]:
-    parts = [part.strip() for part in _SENTENCE_BOUNDARY_RE.split(paragraph)]
-    return [part for part in parts if part]
+    """Sentences by span, so a closing quote is never eaten by the split."""
+
+    return [paragraph[start:end] for start, end in sentence_spans(paragraph)]
 
 
 def _split_oversized_paragraph(paragraph: str, max_chars: int) -> list[str]:
