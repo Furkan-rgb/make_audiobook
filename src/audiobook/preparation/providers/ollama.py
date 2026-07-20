@@ -118,7 +118,7 @@ class OllamaProvider:
         keep_alive: str | int = "10m",
         unload_on_close: bool = True,
         prompt_version: str = DEFAULT_PROMPT_VERSION,
-        auto_pull: bool = True,
+        auto_pull: bool | None = None,
         pull_timeout: float = DEFAULT_PULL_TIMEOUT_SECONDS,
         on_pull_progress: PullProgress | None = None,
     ) -> None:
@@ -143,7 +143,9 @@ class OllamaProvider:
         self.keep_alive = keep_alive
         self.unload_on_close = unload_on_close
         self.prompt_version = prompt_version
-        self.auto_pull = auto_pull
+        self.auto_pull = (
+            auto_pull if auto_pull is not None else bool(_configured().get("auto_pull", True))
+        )
         self.pull_timeout = pull_timeout
         self.on_pull_progress = on_pull_progress or _default_pull_progress
         self._closed = False

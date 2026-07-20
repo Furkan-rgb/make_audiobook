@@ -17,14 +17,16 @@ DEFAULT_PREPARED_MARKDOWN_FILENAME = "prepared_book.md"
 # Narration preparation.  Each provider adapter reads its own entry here to
 # build the menu the frontend offers, so adding a model is a config edit rather
 # than a code change.  Keep the lists to models you can actually reach: a local
-# model that is not pulled yet is fetched automatically at preflight, but one
-# that is not on your plan (or misspelled) only fails once extraction has
-# already run.  API keys are never stored here — an adapter names the
-# environment variable it reads, and the value stays in your shell.
+# model that is not pulled yet is fetched automatically at preflight (unless
+# auto_pull is off), but one that is not on your plan (or misspelled) only
+# fails once extraction has already run.  API keys are never stored here — an
+# adapter names the environment variable it reads, and the value stays in your
+# shell.
 PREPARATION_PROVIDERS = {
     "ollama": {
         "base_url": "http://127.0.0.1:11434",
-        "models": ("gemma4:12b", "gemma4:26b", "gemma4:31b", "qwen3.6:35b"),
+        "models": ("gemma4:12b",),
+        "auto_pull": True,
     },
 }
 DEFAULT_PREPARATION_PROVIDER = "ollama"
