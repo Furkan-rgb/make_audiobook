@@ -37,11 +37,6 @@ RECALL_WEIGHT = 0.5
 PRECISION_WEIGHT = 0.3
 EXACTNESS_WEIGHT = 0.2
 
-# Two changes separated by fewer than this many unchanged characters are one
-# change. Without it, deleting "(Smith 1999, Jones 2001)" can be reported as
-# several findings because the differ keeps an incidental space or digit.
-MERGE_GAP = 3
-
 
 @dataclass(frozen=True)
 class ChangeRegion:
@@ -141,18 +136,17 @@ class CaseScore:
 
 
 def change_regions(source: str, prepared: str) -> list[ChangeRegion]:
-    """The spans in which ``prepared`` differs from ``source``."""
+    """Every span in which ``prepared`` differs from ``source``, atomically.
+
+    One :class:`ChangeRegion` per non-equal opcode the differ emits, with
+    nearby changes deliberately left unmerged. Correctness scoring judges each
+    change against the gold spans on its own, and merging a substantive change
+    into an adjacent permitted one — a citation deletion and the reworded word
+    beside it — would let the second hide behind the first. Coalescing the
+    regions for a readable diff, if ever wanted, is a separate presentation step.
+    """
 
     matcher = SequenceMatcher(None, source, prepared, autojunk=False)
-    merged: list[list[int]] = []
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal":
-            continue
-        if merged and i1 - merged[-1][1] <= MERGE_GAP:
-            merged[-1][1] = i2
-            merged[-1][3] = j2
-        else:
-            merged.append([i1, i2, j1, j2])
     return [
         ChangeRegion(
             source_start=i1,
@@ -160,8 +154,46 @@ def change_regions(source: str, prepared: str) -> list[ChangeRegion]:
             source_text=source[i1:i2],
             output_text=prepared[j1:j2],
         )
-        for i1, i2, j1, j2 in merged
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes()
+        if tag != "equal"
     ]
+
+
+def _trimmed_source_span(region: ChangeRegion) -> tuple[int, int]:
+    """``region``'s source span with surrounding whitespace removed.
+
+    The differ often sweeps an incidental space into a deletion, reporting
+    " (Smith 1999)" where the anchor is "(Smith 1999)". That space sits just
+    outside the expected span but carries none of the change's meaning, so it is
+    trimmed before any containment test rather than being read as the change
+    reaching past the span.
+    """
+
+    text = region.source_text
+    lead = len(text) - len(text.lstrip())
+    trail = len(text) - len(text.rstrip())
+    start = region.source_start + lead
+    end = region.source_end - trail
+    # An all-whitespace change collapses to a point: it carries no words and is
+    # cosmetic wherever it falls, so it need not be contained to be permitted.
+    return (start, start) if start > end else (start, end)
+
+
+def contained_in_expected(region: ChangeRegion, expected: ExpectedEdit) -> bool:
+    """Whether the whole of ``region`` falls inside one expected-edit span.
+
+    Permission is containment, not overlap. A replacement or deletion is
+    expected only when its complete (whitespace-trimmed) source span lies within
+    the gold span; a pure insertion, only when its point does. A change that
+    reaches past the span into protected prose crosses the boundary and is not
+    excused for the part of it that happens to overlap.
+    """
+
+    start, end = _trimmed_source_span(region)
+    if start == end:
+        # A pure insertion has no width; it belongs to the span it sits in.
+        return expected.start <= start <= expected.end
+    return expected.start <= start and end <= expected.end
 
 
 def _project(source: str, prepared: str, start: int, end: int) -> str:
@@ -330,7 +362,7 @@ def score_case(
         _classify(case, region)
         for region in regions
         if not any(
-            region.overlaps(item.start, item.end) for item in case.expect
+            contained_in_expected(region, item) for item in case.expect
         )
     ]
 
@@ -469,6 +501,7 @@ __all__ = [
     "UnexpectedChange",
     "breakdowns",
     "change_regions",
+    "contained_in_expected",
     "determinism",
     "edit_signature",
     "protocol_stats",

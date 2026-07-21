@@ -30,6 +30,23 @@ _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 # wedged server, not to bound a slow download.
 DEFAULT_PULL_TIMEOUT_SECONDS = 3600.0
 
+# Sampling options Ollama accepts on a request. Each is optional here: a value
+# supplied is sent and overrides the model package's default; a value left as
+# None is dropped from the request entirely — not sent as null — so the model
+# package's own default stands. Both benchmarking and normal production leave
+# every one of these unset, so a model runs under the sampling policy it ships
+# with unless a caller deliberately opts into overriding one by passing a value.
+SAMPLING_OPTIONS = (
+    "temperature",
+    "top_k",
+    "top_p",
+    "min_p",
+    "typical_p",
+    "presence_penalty",
+    "frequency_penalty",
+    "repeat_penalty",
+)
+
 PullProgress = Callable[[str], None]
 
 
@@ -137,7 +154,19 @@ class OllamaProvider:
         *,
         base_url: str = DEFAULT_OLLAMA_BASE_URL,
         timeout: float = 300.0,
-        temperature: float = 0.0,
+        # Sampling policy. None means "inherit the model package's default",
+        # which drops the option from the request. Every sampling option defaults
+        # to None, so both the benchmark and normal production preparation run
+        # under each model package's native sampling; a caller opts into
+        # overriding one only by deliberately passing a value here.
+        temperature: float | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        min_p: float | None = None,
+        typical_p: float | None = None,
+        presence_penalty: float | None = None,
+        frequency_penalty: float | None = None,
+        repeat_penalty: float | None = None,
         seed: int = 42,
         num_ctx: int = 8192,
         # A well-behaved response is a handful of short edits, far under this.
@@ -175,12 +204,31 @@ class OllamaProvider:
             # run's limits leave no room for that chain, so the answer is
             # truncated mid-object and the whole unit is lost. Give thinking
             # runs a materially larger floor rather than fail them silently.
-            num_ctx = max(num_ctx, 16384)
-            num_predict = max(num_predict, 8192)
+            num_ctx = max(num_ctx, 32768)
+            num_predict = max(num_predict, 32768)
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.temperature = temperature
+        # Only the sampling options actually given a value; the rest are absent
+        # and inherited from the model package. Ordered to match SAMPLING_OPTIONS
+        # so a request and its metadata always list them the same way.
+        self.sampling = {
+            name: value
+            for name, value in (
+                ("temperature", temperature),
+                ("top_k", top_k),
+                ("top_p", top_p),
+                ("min_p", min_p),
+                ("typical_p", typical_p),
+                ("presence_penalty", presence_penalty),
+                ("frequency_penalty", frequency_penalty),
+                ("repeat_penalty", repeat_penalty),
+            )
+            if value is not None
+        }
+        # No sampling option supplied means the model package governs all of
+        # them: the benchmark's single native-sampling behaviour.
+        self.native_sampling = not self.sampling
         self.seed = seed
         self.num_ctx = num_ctx
         self.num_predict = num_predict
@@ -196,6 +244,22 @@ class OllamaProvider:
         self._closed = False
         self._used = False
 
+    def _request_options(self) -> dict[str, Any]:
+        """The Ollama ``options`` object for a chat request.
+
+        The three budgets are always explicit: they are capacity ceilings, not
+        quality knobs, and must stay identical across models in a mode. Sampling
+        options are spread in only when set, so any one left to inherit the model
+        default is absent from the request rather than sent as null.
+        """
+
+        return {
+            "seed": self.seed,
+            "num_ctx": self.num_ctx,
+            "num_predict": self.num_predict,
+            **self.sampling,
+        }
+
     @property
     def metadata(self) -> ProviderMetadata:
         return ProviderMetadata(
@@ -204,12 +268,13 @@ class OllamaProvider:
             prompt_version=self.prompt_version,
             base_url=self.base_url,
             parameters={
-                "temperature": self.temperature,
-                "seed": self.seed,
-                "num_ctx": self.num_ctx,
-                "num_predict": self.num_predict,
+                **self._request_options(),
                 "think": self.think,
                 "structured_output": True,
+                # True when no sampling option was sent, so the model package's
+                # own defaults governed generation. What *was* sent is whichever
+                # of SAMPLING_OPTIONS appears above; the rest were omitted.
+                "native_sampling": self.native_sampling,
             },
         )
 
@@ -378,12 +443,7 @@ class OllamaProvider:
                 "think": self.think,
                 "format": RESPONSE_JSON_SCHEMA,
                 "keep_alive": self.keep_alive,
-                "options": {
-                    "temperature": self.temperature,
-                    "seed": self.seed,
-                    "num_ctx": self.num_ctx,
-                    "num_predict": self.num_predict,
-                },
+                "options": self._request_options(),
             },
         )
         self._used = True

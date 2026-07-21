@@ -57,6 +57,7 @@ from .prompting import (
 from .providers import (
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_OLLAMA_MODEL,
+    SAMPLING_OPTIONS,
     NarrationPreparationProvider,
     OllamaProvider,
     ProviderDescriptor,
@@ -149,6 +150,7 @@ __all__ = [
     "parse_structured_response",
     "DEFAULT_OLLAMA_BASE_URL",
     "DEFAULT_OLLAMA_MODEL",
+    "SAMPLING_OPTIONS",
     "NarrationPreparationProvider",
     "OllamaProvider",
     "ProviderDescriptor",

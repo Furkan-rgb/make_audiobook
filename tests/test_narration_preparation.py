@@ -40,7 +40,7 @@ from audiobook.preparation import (
     sentence_spans,
     validate_preparation,
 )
-from audiobook.preparation.providers.ollama import DEFAULT_OLLAMA_MODEL
+from audiobook.preparation.providers.ollama import DEFAULT_OLLAMA_MODEL, SAMPLING_OPTIONS
 from audiobook.chunking.semantic import build_chunk_plan
 
 from support import (
@@ -603,6 +603,93 @@ class OllamaProviderTests(unittest.TestCase):
 
         payload = json.loads(captured[0].data.decode("utf-8"))
         self.assertIs(payload["think"], True)
+
+    def _sent_payload(self, provider):
+        """Prepare one passage through ``provider`` and return the request body."""
+
+        captured = []
+
+        def fake_urlopen(request, timeout):
+            captured.append(request)
+            return FakeHTTPResponse(
+                json.dumps(
+                    {"message": {"content": json.dumps({"edits": [], "warnings": []})}}
+                ).encode("utf-8")
+            )
+
+        with patch(
+            "audiobook.preparation.providers.ollama.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            provider.prepare(
+                PreparationRequest(
+                    chapter_title="One", source_text="A complete source passage."
+                )
+            )
+        return json.loads(captured[0].data.decode("utf-8"))
+
+    def test_native_sampling_omits_every_sampling_option_but_keeps_the_budgets(self):
+        # The benchmark builds the provider with temperature=None, meaning
+        # "inherit the model package's default": no sampling option is sent, so
+        # the model's own policy governs, while the controlled budgets, seed, and
+        # think mode are all still explicit.
+        provider = OllamaProvider(temperature=None, unload_on_close=False)
+        payload = self._sent_payload(provider)
+        options = payload["options"]
+
+        for name in SAMPLING_OPTIONS:
+            # Absent, not present-with-null: the key must not be in the request.
+            self.assertNotIn(name, options)
+        self.assertEqual(options["seed"], 42)
+        self.assertEqual(options["num_ctx"], 8192)
+        self.assertEqual(options["num_predict"], 4096)
+        self.assertIs(payload["think"], False)
+        self.assertIs(provider.native_sampling, True)
+        self.assertIs(provider.metadata.parameters["native_sampling"], True)
+        self.assertNotIn("temperature", provider.metadata.parameters)
+
+    def test_supplied_sampling_options_are_sent_and_the_rest_stay_absent(self):
+        # A value given for an option is sent and overrides the model default;
+        # the options left as None remain omitted, and their absence is what lets
+        # the package supply them.
+        provider = OllamaProvider(
+            temperature=None, top_p=0.9, repeat_penalty=1.2, unload_on_close=False
+        )
+        options = self._sent_payload(provider)["options"]
+
+        self.assertEqual(options["top_p"], 0.9)
+        self.assertEqual(options["repeat_penalty"], 1.2)
+        self.assertNotIn("temperature", options)
+        self.assertNotIn("top_k", options)
+        self.assertIs(provider.native_sampling, False)
+
+    def test_production_default_uses_native_sampling(self):
+        # Native sampling is the default for normal production preparation too,
+        # not only the benchmark: a provider built without naming a sampling
+        # policy — the way production constructs it — omits every sampling option
+        # so the model package's own defaults govern generation.
+        provider = OllamaProvider(unload_on_close=False)
+        options = self._sent_payload(provider)["options"]
+
+        for name in SAMPLING_OPTIONS:
+            self.assertNotIn(name, options)
+        # The controlled budgets and seed are still explicit.
+        self.assertEqual(options["seed"], 42)
+        self.assertIn("num_ctx", options)
+        self.assertIn("num_predict", options)
+        self.assertIs(provider.native_sampling, True)
+        self.assertIs(provider.metadata.parameters["native_sampling"], True)
+
+    def test_native_sampling_keeps_the_mode_context_and_output_floors(self):
+        # The budgets are capacity ceilings, not quality tuning, so they hold at
+        # their per-mode floors regardless of the sampling policy.
+        direct = OllamaProvider(temperature=None, think=False, unload_on_close=False)
+        self.assertGreaterEqual(direct.num_ctx, 8192)
+        self.assertGreaterEqual(direct.num_predict, 4096)
+
+        thinking = OllamaProvider(temperature=None, think=True, unload_on_close=False)
+        self.assertGreaterEqual(thinking.num_ctx, 16384)
+        self.assertGreaterEqual(thinking.num_predict, 8192)
 
     def test_malformed_transport_and_structured_json_are_rejected(self):
         provider = OllamaProvider(unload_on_close=False)

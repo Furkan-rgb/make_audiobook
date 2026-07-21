@@ -14,9 +14,11 @@ import unittest
 from collections import Counter
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import MagicMock, patch
 
 from audiobook import cli
 from audiobook.benchmarking import (
+    BASE_SEED,
     CATEGORIES,
     TIERS,
     BenchmarkOptions,
@@ -28,6 +30,7 @@ from audiobook.benchmarking import (
     print_summary,
     run,
     score_case,
+    seed_for_repetition,
 )
 from audiobook.benchmarking.corpus import case_from_dict, lint_case
 from audiobook.preparation import (
@@ -135,6 +138,54 @@ OVERSIZED_EDIT = PreparationEdit(
 )
 
 
+def citation_deletion_case(source, *, anchor="(Smith 1999)", prepared=None, cid="fixture-adjacent"):
+    """A case whose one expected edit is deleting ``anchor`` from ``source``.
+
+    Built straight from a payload rather than through the applier because these
+    scoring fixtures feed ``score_case`` a hand-written model output directly:
+    the point is to control the exact diff against the source, which a real
+    applier run would not let a test do.
+    """
+
+    return case_from_dict(
+        {
+            "id": cid,
+            "tier": "trap",
+            "categories": ["bibliographic_citation"],
+            "source": source,
+            "expect": [
+                {
+                    "anchor": anchor,
+                    "accept": [""],
+                    "category": "bibliographic_citation",
+                    "why": "Visual-only sourcing.",
+                }
+            ],
+            "prepared": source if prepared is None else prepared,
+        }
+    )
+
+
+# The citation deletion and the reworded word sit one comma apart, so the differ
+# reports them as two atomic changes: the deletion the gold answer asked for,
+# and a substantive "remained" -> "buckled" it did not.
+ADJACENT_SOURCE = "The result (Smith 1999), long central, remained sound."
+ADJACENT_CASE = citation_deletion_case(
+    ADJACENT_SOURCE, prepared="The result, long central, remained sound."
+)
+ADJACENT_CORRECT = "The result, long central, remained sound."
+ADJACENT_WITH_EXTRA_EDIT = "The result, long central, buckled sound."
+
+# One deletion swallows the citation *and* the protected prose beside it, so the
+# single change crosses the expected span's boundary instead of sitting inside
+# it.
+BOUNDARY_SOURCE = "The result (Smith 1999) mattered greatly here."
+BOUNDARY_CASE = citation_deletion_case(
+    BOUNDARY_SOURCE, prepared="The result mattered greatly here.", cid="fixture-boundary"
+)
+BOUNDARY_OVERREACH = "The result here."
+
+
 def prepare(case, edits):
     """Run edits through the production applier, as the benchmark does."""
 
@@ -150,20 +201,35 @@ def judge(case, edits):
 
 
 class ScriptedProvider:
-    """A provider whose answer to each passage is decided by the test."""
+    """A provider whose answer to each passage is decided by the test.
+
+    Models the benchmark's real provider closely enough to exercise the run
+    metadata: its declared parameters carry no sampling option and flag
+    ``native_sampling``, matching a provider the runner built with
+    ``temperature=None``, and it records the seed it was told to generate under
+    so the seed sequence can be checked at the provider, not just in the report.
+    """
 
     def __init__(self, model, script, registry):
         self._metadata = ProviderMetadata(
             name="fake",
             model=model,
             prompt_version=DEFAULT_PROMPT_VERSION,
-            parameters={"temperature": 0.0},
+            parameters={
+                "seed": 42,
+                "num_ctx": 8192,
+                "num_predict": 4096,
+                "think": False,
+                "structured_output": True,
+                "native_sampling": True,
+            },
         )
         self.model = model
         self.script = script
         self.calls = 0
         self.closed = False
         self.availability_checks = 0
+        self.seeds_seen = []
         registry.append(self)
 
     @property
@@ -175,6 +241,9 @@ class ScriptedProvider:
 
     def prepare(self, request):
         self.calls += 1
+        # The runner sets `seed` before each repetition; capture what generation
+        # would have run under at the moment it is asked.
+        self.seeds_seen.append(getattr(self, "seed", None))
         return PreparationResult(
             edits=list(self.script(request.source_text, self.calls)),
             provider_metadata=self.metadata,
@@ -360,6 +429,56 @@ class ScoringTests(unittest.TestCase):
             ["historical-year-must-stay"],
         )
 
+    def test_a_substantive_change_beside_a_permitted_edit_still_fails(self):
+        # The blind spot the merge-then-overlap scorer had: the model makes the
+        # expected citation deletion but also rewords the adjacent prose, and
+        # the two changes are close enough that merging them into one region —
+        # which then overlapped the gold span — excused the reword. Scored on
+        # atomic changes with containment, the reword is caught on its own.
+        score = score_case(ADJACENT_CASE, ADJACENT_WITH_EXTRA_EDIT)
+
+        self.assertEqual(score.recall, 1.0)
+        self.assertFalse(score.fidelity_pass)
+        self.assertEqual(score.score, 0.0)
+        self.assertFalse(score.passed)
+        self.assertEqual(score.substantive_false_positives, 1)
+        # The unexpected change names the reworded word, not the citation whose
+        # deletion the gold answer permitted.
+        substantive = [item for item in score.unexpected if item.severity == "substantive"]
+        self.assertEqual(len(substantive), 1)
+        self.assertIn("remain", substantive[0].source_text)
+        self.assertIn("buckl", substantive[0].output_text)
+        self.assertNotIn("Smith", substantive[0].source_text)
+
+    def test_a_normal_citation_deletion_beside_that_word_still_scores_full(self):
+        # The control for the case above: with nothing changed but the citation,
+        # the incidental space the deletion sweeps up must not be read as a
+        # change reaching past the anchor, so the case still scores perfectly.
+        score = score_case(ADJACENT_CASE, ADJACENT_CORRECT)
+
+        self.assertEqual(score.score, 1.0)
+        self.assertTrue(score.fidelity_pass)
+        self.assertTrue(score.passed)
+        self.assertEqual(score.unexpected, [])
+
+    def test_a_change_crossing_the_expected_boundary_is_unexpected(self):
+        # One deletion takes the citation and the protected words next to it. It
+        # overlaps the gold span but is not contained by it, so the overlap buys
+        # it nothing: the change is unexpected and the collateral damage to the
+        # prose is a fidelity failure.
+        score = score_case(BOUNDARY_CASE, BOUNDARY_OVERREACH)
+
+        self.assertFalse(score.fidelity_pass)
+        self.assertEqual(score.score, 0.0)
+        self.assertFalse(score.passed)
+        self.assertEqual(score.substantive_false_positives, 1)
+        crossing = score.unexpected[0]
+        self.assertEqual(crossing.severity, "substantive")
+        # The change spans past the citation into the prose it was not asked to
+        # touch.
+        self.assertIn("(Smith 1999)", crossing.source_text)
+        self.assertIn("mattered", crossing.source_text)
+
     def test_a_word_preserving_change_costs_precision_but_not_fidelity(self):
         score = judge(CITATION_CASE, [GOLD_EDIT, COSMETIC_EDIT])
 
@@ -504,6 +623,58 @@ class BenchmarkRunnerTests(unittest.TestCase):
 
         self.assertEqual(by_model["model-oracle"].determinism, 1.0)
         self.assertLess(by_model["model-flaky"].determinism, 1.0)
+
+    def test_repetitions_run_under_a_sequential_seed_shared_across_models(self):
+        report, providers = self.run_benchmark(
+            ("model-oracle", "model-lazy"), repetitions=3
+        )
+
+        # Two cases per repetition, so each repetition's seed appears twice, and
+        # the first repetition runs under the base seed rather than base + 1.
+        for provider in providers:
+            self.assertEqual(provider.seeds_seen, [42, 42, 43, 43, 44, 44])
+        # Every model saw the identical sequence: the same seed for the same
+        # repetition, deterministic across models.
+        self.assertEqual(providers[0].seeds_seen, providers[1].seeds_seen)
+        self.assertEqual(seed_for_repetition(1), BASE_SEED)
+        self.assertEqual(
+            [seed_for_repetition(rep) for rep in (1, 2, 3)], [42, 43, 44]
+        )
+        # And each run records the seed it generated under.
+        for repetition, expected in ((1, 42), (2, 43), (3, 44)):
+            self.assertEqual(
+                {run.seed for run in report.runs if run.repetition == repetition},
+                {expected},
+            )
+
+    def test_the_report_records_native_sampling_and_the_seed_sequence(self):
+        report, _providers = self.run_benchmark(
+            ("model-oracle", "model-vandal"), repetitions=2
+        )
+        payload = json.loads(report.json_path.read_text(encoding="utf-8"))
+        sampling = payload["configuration"]["sampling"]
+
+        # The metadata states plainly that model-native sampling was used, and
+        # names both the options it still supplied and the ones it omitted.
+        self.assertTrue(sampling["native_sampling"])
+        self.assertEqual(sampling["seeds"], [42, 43])
+        self.assertEqual(sampling["supplied"], [])
+        self.assertIn("temperature", sampling["omitted"])
+        self.assertEqual(len(sampling["omitted"]), 8)
+        self.assertEqual(payload["configuration"]["prompt_version"], DEFAULT_PROMPT_VERSION)
+        # The seed is recorded on every run for reproducing a single attempt.
+        self.assertEqual(
+            {run["seed"] for run in payload["runs"] if run["repetition"] == 1}, {42}
+        )
+        # And the explicit provider budgets are recorded per model.
+        options = payload["models"][0]["provider_options"]
+        self.assertIn("num_ctx", options)
+        self.assertIn("num_predict", options)
+        self.assertNotIn("temperature", options)
+
+        markdown = report.markdown_path.read_text(encoding="utf-8")
+        self.assertIn("model-native defaults", markdown)
+        self.assertIn("Seeds (one per repetition): 42, 43", markdown)
 
     def test_a_provider_that_cannot_start_does_not_hide_the_others(self):
         providers = []
@@ -742,6 +913,35 @@ class BenchmarkCommandLineTests(unittest.TestCase):
         self.assertTrue(options.models)
         # The default run leaves thinking off, matching production.
         self.assertEqual(options.think_modes, (False,))
+
+    def test_cli_and_driver_route_through_the_one_runner(self):
+        # The file-first run() (which run_benchmark.py calls) is a thin wrapper
+        # over the runner, so a driver run reaches the same code as the CLI.
+        report = MagicMock()
+        report.models_reports = []
+        with patch(
+            "audiobook.benchmarking.run.benchmark_preparation", return_value=report
+        ) as runner:
+            run(
+                models=("model-a",),
+                provider="fake",
+                output_dir=Path("unused"),
+                provider_factory=lambda *args, **kwargs: None,
+                cases=[],
+                progress=None,
+                show_summary=False,
+            )
+        runner.assert_called_once()
+
+        # The CLI benchmark command calls that same runner.
+        cli_report = MagicMock()
+        cli_report.models_reports = [MagicMock(errored_cases=0)]
+        cli_report.runs = [MagicMock()]
+        with patch(
+            "audiobook.cli.benchmark_preparation", return_value=cli_report
+        ) as cli_runner, patch("audiobook.cli.print_summary"):
+            cli.main(["benchmark", "--provider", "fake", "--models", "model-a"])
+        cli_runner.assert_called_once()
 
     def test_think_both_expands_to_two_modes_without_probing_a_server(self):
         # A non-Ollama provider skips the capability probe, so this builds

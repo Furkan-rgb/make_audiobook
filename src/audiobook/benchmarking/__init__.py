@@ -16,6 +16,7 @@ from .corpus import (
     load_corpus,
 )
 from .run import (
+    BASE_SEED,
     DEFAULT_BENCHMARK_MODELS,
     BenchmarkOptions,
     BenchmarkVariant,
@@ -24,6 +25,7 @@ from .run import (
     default_output_dir,
     print_summary,
     run,
+    seed_for_repetition,
 )
 from .plots import write_plots
 from .report import (
@@ -36,6 +38,7 @@ from .report import (
 from .scoring import CaseScore, change_regions, score_case
 
 __all__ = [
+    "BASE_SEED",
     "BENCHMARK_SCHEMA_VERSION",
     "CATEGORIES",
     "DEFAULT_BENCHMARK_MODELS",
@@ -60,5 +63,6 @@ __all__ = [
     "render_markdown",
     "run",
     "score_case",
+    "seed_for_repetition",
     "write_plots",
 ]

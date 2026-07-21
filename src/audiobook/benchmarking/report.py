@@ -17,7 +17,7 @@ from pathlib import Path
 import tempfile
 from typing import Any, Sequence
 
-from ..preparation import PreparationEdit
+from ..preparation import DEFAULT_PROMPT_VERSION, SAMPLING_OPTIONS, PreparationEdit
 from .scoring import Breakdown, CaseScore
 
 
@@ -33,6 +33,9 @@ class CaseRun:
     repetition: int
     seconds: float
     score: CaseScore
+    # The seed this run generated under. Recorded per run because it advances
+    # with the repetition, so a reader can reproduce any single attempt.
+    seed: int | None = None
     # Kept verbatim because the scored result cannot explain a model that
     # proposed the right change and merely mis-anchored it.
     proposed: list[PreparationEdit] = field(default_factory=list, repr=False)
@@ -42,6 +45,7 @@ class CaseRun:
             "case_id": self.case_id,
             "model": self.model,
             "repetition": self.repetition,
+            "seed": self.seed,
             "seconds": round(self.seconds, 3),
             "proposed_edits": [edit.to_dict() for edit in self.proposed],
             **self.score.to_dict(),
@@ -79,6 +83,10 @@ class ModelReport:
     mean_seconds: float
     total_seconds: float
     errored_cases: int
+    # The provider options this variant actually ran under — the explicit
+    # budgets and think mode, plus whichever sampling options were sent (none,
+    # under native sampling). Read from the provider's own metadata.
+    provider_options: dict[str, Any] = field(default_factory=dict)
     runs: list[CaseRun] = field(default_factory=list, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,6 +106,7 @@ class ModelReport:
             "mean_seconds": round(self.mean_seconds, 3),
             "total_seconds": round(self.total_seconds, 3),
             "errored_cases": self.errored_cases,
+            "provider_options": self.provider_options,
         }
 
 
@@ -113,10 +122,40 @@ class BenchmarkReport:
     runs: list[CaseRun]
     json_path: Path
     markdown_path: Path
+    # Sampling policy of the run. The benchmark has one: model-native defaults,
+    # so every sampling option is omitted and the seed sequence (one per
+    # repetition) is the only generation control the benchmark still pins.
+    native_sampling: bool = True
+    seeds: list[int] = field(default_factory=list)
+    prompt_version: str = DEFAULT_PROMPT_VERSION
     schema_version: int = BENCHMARK_SCHEMA_VERSION
     # Filled in by the runner after the markdown and JSON are on disk; the plots
     # are a convenience view of them, so a run without plots is still complete.
     plot_paths: list[Path] = field(default_factory=list)
+
+    @property
+    def supplied_sampling(self) -> list[str]:
+        """Sampling options any model actually sent, in canonical order.
+
+        Empty under native sampling. Derived from the providers' own metadata
+        rather than assumed, so the report never claims an option was omitted
+        that a run in fact supplied.
+        """
+
+        sent = {
+            key
+            for item in self.models_reports
+            for key in item.provider_options
+            if key in SAMPLING_OPTIONS
+        }
+        return [name for name in SAMPLING_OPTIONS if name in sent]
+
+    @property
+    def omitted_sampling(self) -> list[str]:
+        """Sampling options left for the model package to supply."""
+
+        sent = set(self.supplied_sampling)
+        return [name for name in SAMPLING_OPTIONS if name not in sent]
 
     @property
     def ranked(self) -> list[ModelReport]:
@@ -147,6 +186,17 @@ class BenchmarkReport:
                 "corpus_size": self.corpus_size,
                 "corpus_tiers": self.corpus_tiers,
                 "cache_reuse": False,
+                "prompt_version": self.prompt_version,
+                "sampling": {
+                    # The benchmark's one behaviour: each model generates under
+                    # its package's own sampling defaults. `supplied` lists what
+                    # the benchmark still sends explicitly; `omitted` lists the
+                    # sampling options dropped so the model package provides them.
+                    "native_sampling": self.native_sampling,
+                    "seeds": self.seeds,
+                    "supplied": self.supplied_sampling,
+                    "omitted": self.omitted_sampling,
+                },
             },
             "models": [item.to_dict() for item in self.models_reports],
             "runs": [run.to_dict() for run in self.runs],
@@ -341,6 +391,15 @@ def render_markdown(report: BenchmarkReport, *, appendix_limit: int = 8) -> str:
     tiers = ", ".join(
         f"{count} {label}" for label, count in sorted(report.corpus_tiers.items())
     )
+    seeds = ", ".join(str(seed) for seed in report.seeds) or "—"
+    omitted = ", ".join(report.omitted_sampling) or "none"
+    supplied = ", ".join(report.supplied_sampling) or "none"
+    sampling_line = (
+        "- Sampling: model-native defaults — the benchmark omits "
+        f"{omitted} so each model package's own values are used"
+        if report.native_sampling
+        else f"- Sampling: benchmark-supplied ({supplied})"
+    )
     lines = [
         "# Narration preparation benchmark",
         "",
@@ -348,6 +407,10 @@ def render_markdown(report: BenchmarkReport, *, appendix_limit: int = 8) -> str:
         f"- Corpus: {report.corpus_size} cases ({tiers})",
         f"- Repetitions per model: {report.repetitions}",
         "- Preparation-cache reuse: disabled",
+        f"- Prompt version: `{report.prompt_version}`",
+        sampling_line,
+        f"- Seeds (one per repetition): {seeds}",
+        f"- Explicitly controlled options: seed, num_ctx, num_predict, think",
         f"- Run at: {report.created_at}",
         "",
         "## Leaderboard",

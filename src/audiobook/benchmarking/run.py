@@ -15,8 +15,16 @@ as an earlier version did, reloaded each one once per repetition and spent more
 time swapping weights than preparing text. The cost of finishing sooner is that
 timing is no longer insulated from a machine that slows over a long run — a
 model measured late looks slower than one measured early — but scores are
-unaffected, because every case is independent and the temperature is zero, and
-timing is already reported as specific to the machine.
+unaffected, because every case is independent and each is generated under a
+fixed per-repetition seed, and timing is already reported as specific to the
+machine.
+
+Sampling is left to each model package: the benchmark sends no temperature or
+other sampling option, so a model runs under the policy it ships with rather
+than one the harness imposed. What stays pinned is everything that would make a
+comparison unfair otherwise — the prompt, schema, thinking mode, context and
+output budgets, and a deterministic seed sequence shared across models, so that
+repetition N of every model runs under the same seed.
 """
 
 from __future__ import annotations
@@ -26,11 +34,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from time import perf_counter
-from typing import Callable, Sequence, TextIO
+from typing import Any, Callable, Sequence, TextIO
 
 from ..preparation import (
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_POLICY,
+    DEFAULT_PROMPT_VERSION,
+    SAMPLING_OPTIONS,
     NarrationPreparationProvider,
     PreparationEdit,
     PreparationRequest,
@@ -66,7 +76,26 @@ DEFAULT_BENCHMARK_MODELS = (
     "gemma4:31b",
 )
 
+# The seed repetition 1 runs under; later repetitions step up from here. Fixed
+# so a run is reproducible and every model sees the same seed for the same
+# repetition, while successive repetitions still vary the generation rather than
+# reusing one seed — the point of running a model more than once under native
+# sampling is to see whether it stays safe across several generations.
+BASE_SEED = 42
+
 ProviderFactory = Callable[..., NarrationPreparationProvider]
+
+
+def seed_for_repetition(repetition: int, base: int = BASE_SEED) -> int:
+    """The seed a 1-based ``repetition`` generates under: ``base + index``.
+
+    Repetition 1 is always ``base`` (never ``base + 1``), so the first run of
+    every model is reproducible from the base seed alone.
+    """
+
+    if repetition < 1:
+        raise ValueError("Repetition numbers are 1-based")
+    return base + repetition - 1
 
 
 @dataclass(frozen=True)
@@ -201,7 +230,11 @@ def _attempt(
     return attempt
 
 
-def _model_report(model: str, runs: Sequence[CaseRun]) -> ModelReport:
+def _model_report(
+    model: str,
+    runs: Sequence[CaseRun],
+    provider_options: dict[str, Any] | None = None,
+) -> ModelReport:
     scores = [run.score for run in runs]
     protocol = ProtocolTotals()
     for score in scores:
@@ -237,8 +270,25 @@ def _model_report(model: str, runs: Sequence[CaseRun]) -> ModelReport:
         mean_seconds=(sum(seconds) / len(seconds) if seconds else 0.0),
         total_seconds=sum(seconds),
         errored_cases=sum(1 for score in scores if score.error is not None),
+        provider_options=dict(provider_options or {}),
         runs=list(runs),
     )
+
+
+def _provider_options(provider: NarrationPreparationProvider | None) -> dict[str, Any]:
+    """The options a provider declares it will run under, or empty if it failed.
+
+    Read from the provider's own metadata rather than assumed, so the report
+    records what was actually sent — including that the sampling options were
+    omitted for the model package to supply.
+    """
+
+    if provider is None:
+        return {}
+    try:
+        return dict(provider.metadata.parameters)
+    except Exception:
+        return {}
 
 
 def benchmark_preparation(
@@ -263,6 +313,8 @@ def benchmark_preparation(
 
     variants = options.variants
     runs: list[CaseRun] = []
+    seeds = [seed_for_repetition(rep) for rep in range(1, options.repetitions + 1)]
+    variant_options: dict[str, dict[str, Any]] = {}
     total = len(selected) * len(variants) * options.repetitions
     if progress is not None:
         progress(0, total)
@@ -271,6 +323,10 @@ def benchmark_preparation(
         provider: NarrationPreparationProvider | None = None
         setup_error: str | None = None
         try:
+            # No sampling option is passed here: the provider omits every one by
+            # default, so each model runs under its package's native sampling.
+            # This is the same policy production uses — the benchmark does not
+            # impose a sampling profile of its own.
             provider = provider_factory(
                 options.provider_name,
                 model=variant.model,
@@ -282,8 +338,16 @@ def benchmark_preparation(
         except Exception as exc:
             setup_error = f"{type(exc).__name__}: {exc}"
 
+        variant_options[variant.label] = _provider_options(provider)
+
         try:
             for repetition in range(1, options.repetitions + 1):
+                seed = seed_for_repetition(repetition)
+                if provider is not None:
+                    # One provider stays loaded across every repetition of this
+                    # variant; only the seed advances, so repetition N runs under
+                    # the same seed for every model without reloading weights.
+                    provider.seed = seed
                 for case in selected:
                     started = perf_counter()
                     if provider is None or setup_error is not None:
@@ -307,6 +371,7 @@ def benchmark_preparation(
                             case_id=case.id,
                             model=variant.label,
                             repetition=repetition,
+                            seed=seed,
                             seconds=elapsed,
                             score=score,
                             proposed=list(attempt.proposed),
@@ -327,6 +392,14 @@ def benchmark_preparation(
     for case in selected:
         tier_counts[case.tier] = tier_counts.get(case.tier, 0) + 1
 
+    # The benchmark's one behaviour is native sampling, so unless a variant's
+    # provider reports having sent sampling options, the run inherited them all.
+    native_sampling = not any(
+        key in SAMPLING_OPTIONS
+        for parameters in variant_options.values()
+        for key in parameters
+    )
+
     report = BenchmarkReport(
         created_at=utc_now(),
         provider_name=options.provider_name,
@@ -336,11 +409,16 @@ def benchmark_preparation(
         corpus_tiers=tier_counts,
         models_reports=[
             _model_report(
-                variant.label, [run for run in runs if run.model == variant.label]
+                variant.label,
+                [run for run in runs if run.model == variant.label],
+                variant_options.get(variant.label),
             )
             for variant in variants
         ],
         runs=runs,
+        native_sampling=native_sampling,
+        seeds=seeds,
+        prompt_version=DEFAULT_PROMPT_VERSION,
         json_path=options.output_dir / "benchmark.json",
         markdown_path=options.output_dir / "comparison.md",
     )
@@ -449,6 +527,7 @@ def run(
 
 
 __all__ = [
+    "BASE_SEED",
     "BENCHMARK_SCHEMA_VERSION",
     "DEFAULT_BENCHMARK_MODELS",
     "BenchmarkOptions",
@@ -461,4 +540,5 @@ __all__ = [
     "default_output_dir",
     "print_summary",
     "run",
+    "seed_for_repetition",
 ]

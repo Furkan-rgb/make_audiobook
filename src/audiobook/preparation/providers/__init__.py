@@ -10,6 +10,7 @@ from .base import (
 from .ollama import (
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_OLLAMA_MODEL,
+    SAMPLING_OPTIONS,
     OllamaProvider,
     fetch_model_capabilities,
 )
@@ -27,6 +28,7 @@ register_provider("ollama", OllamaProvider)
 __all__ = [
     "DEFAULT_OLLAMA_BASE_URL",
     "DEFAULT_OLLAMA_MODEL",
+    "SAMPLING_OPTIONS",
     "NarrationPreparationProvider",
     "OllamaProvider",
     "ProviderDescriptor",

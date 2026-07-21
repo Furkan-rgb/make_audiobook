@@ -123,6 +123,27 @@ with plain Python values instead of flags — edit its settings and run
 through the same `benchmark_preparation()`, the seam the tests drive with a
 scripted in-memory provider.
 
+### Sampling and seeds
+
+Sampling is left to each model package. The benchmark sends no `temperature`,
+`top_k`, `top_p`, `min_p`, `typical_p`, `presence_penalty`, `frequency_penalty`,
+or `repeat_penalty`: each is omitted from the request entirely — not sent as
+`null` — so Ollama falls back to the defaults the model ships with, and a model
+is measured under its own policy rather than one the harness imposed. This is the
+only sampling behaviour; there is no temperature-zero mode and no `--sampling`
+flag. Normal production preparation uses the same native sampling — neither path
+sends a sampling option — unless a caller deliberately overrides one.
+
+Everything else that would otherwise make a comparison unfair stays pinned and
+identical across models: the prompt and its version, the JSON schema, the
+thinking mode, the context and output budgets (`num_ctx`/`num_predict`, floored
+higher for thinking runs), and the seed. Seeds run as a deterministic sequence —
+repetition 1 uses `42`, repetition 2 uses `43`, and so on — the same for every
+model, so a repetition is reproducible while successive repetitions still test
+whether a model stays safe across several native-sampling generations.
+`benchmark.json` records that native sampling was used, which options were
+omitted, the explicit provider options, and the seed for every run.
+
 ### Thinking
 
 `--think both` scores each model twice, once direct and once with reasoning

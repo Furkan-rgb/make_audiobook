@@ -210,8 +210,13 @@ identical.
 
 Each case is a fresh provider request with no cache and no resume, applied by
 the same applier and validation policy production uses, so the only thing that
-differs between two columns of the table is the model. The benchmark writes a
-timestamped directory under `output/benchmarks/` containing:
+differs between two columns of the table is the model. Sampling is left to each
+model package — the benchmark sends no temperature or other sampling option, so
+a model runs under the policy it ships with — while the prompt, schema, thinking
+mode, context and output budgets, and a shared seed sequence (one seed per
+repetition, `42, 43, …`, the same for every model) stay pinned. What was omitted,
+what was sent, and each run's seed are all recorded in `benchmark.json`. The
+benchmark writes a timestamped directory under `output/benchmarks/` containing:
 
 - `comparison.md`, a leaderboard with per-tier and per-category breakdowns and a
   failure appendix that shows every wrong change as a diff against the gold text;
