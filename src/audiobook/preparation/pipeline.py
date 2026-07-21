@@ -8,7 +8,7 @@ import json
 from typing import Callable, Sequence
 
 from .adaptation import apply_edits
-from .artifacts import refresh_hashes, validate_artifact
+from .artifacts import refresh_hashes, sha256_text, validate_artifact
 from .normalization import normalize_text
 from .providers.base import NarrationPreparationProvider
 from .segmentation import (
@@ -97,10 +97,13 @@ class NarrationPreparationPipeline:
 
     @staticmethod
     def _checkpoint(book: PreparedBook, callback: CheckpointCallback | None) -> None:
+        # Units and chapters carry their hashes from construction, so the
+        # callback's own save refreshes only the derived aggregates. A full
+        # validate_artifact runs once when the book is complete, not on every
+        # unit — the redundant per-checkpoint pass this once did was the bulk of
+        # the quadratic checkpoint cost.
         if callback is None:
             return
-        refresh_hashes(book)
-        validate_artifact(book)
         callback(book)
 
     def _segments(self, normalized_text: str) -> list[SourceUnit]:
@@ -187,6 +190,8 @@ class NarrationPreparationPipeline:
                 title=chapter_title,
                 source_text=source_text,
                 normalized_text=normalized,
+                source_sha256=sha256_text(source_text),
+                normalized_sha256=sha256_text(normalized),
             )
             book.chapters.append(prepared_chapter)
 
@@ -208,6 +213,10 @@ class NarrationPreparationPipeline:
                             kind=segment.kind,
                             source_text=segment.text,
                             prepared_text=segment.text,
+                            # Structural text is copied through verbatim, so both
+                            # digests are the source digest already in hand.
+                            source_sha256=source_digest,
+                            prepared_sha256=source_digest,
                         )
                     )
                     self._checkpoint(book, checkpoint)
@@ -234,6 +243,7 @@ class NarrationPreparationPipeline:
                     unit.unit_id = unit_id
                     unit.position = segment.position
                     unit.source_text = segment.text
+                    unit.source_sha256 = source_digest
                     unit.cache_key = cache_key
                     unit.cache_hit = True
                 else:
@@ -251,12 +261,15 @@ class NarrationPreparationPipeline:
                     validate_preparation(
                         segment.text, prepared_text, policy=self.validation_policy
                     )
+                    final_text = prepared_text.strip()
                     unit = PreparedUnit(
                         unit_id=unit_id,
                         position=segment.position,
                         kind="prose",
                         source_text=segment.text,
-                        prepared_text=prepared_text.strip(),
+                        prepared_text=final_text,
+                        source_sha256=source_digest,
+                        prepared_sha256=sha256_text(final_text),
                         cache_key=cache_key,
                         edits=applied,
                         warnings=[*result.warnings, *refusals],

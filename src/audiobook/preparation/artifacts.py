@@ -50,16 +50,29 @@ def _canonical_hash(value: Any) -> str:
 
 
 def refresh_hashes(book: PreparedBook) -> PreparedBook:
-    """Refresh every derived hash in place and return ``book``."""
+    """Refresh derived hashes in place and return ``book``.
+
+    Per-unit and per-chapter *source* hashes cover text that is fixed once the
+    unit or chapter is built — the pipeline never mutates it in place — so they
+    are computed only when missing. The *derived* aggregate hashes
+    (``chapter.prepared_sha256`` and the book-level digests) fold in child text
+    that grows as units are appended, so they are always recomputed. This keeps
+    a per-checkpoint refresh from re-hashing the whole book unit by unit;
+    :func:`validate_artifact` still recomputes and verifies every hash.
+    """
 
     if not book.created_at:
         book.created_at = datetime.now(timezone.utc).isoformat()
     for chapter in book.chapters:
         for unit in chapter.units:
-            unit.source_sha256 = sha256_text(unit.source_text)
-            unit.prepared_sha256 = sha256_text(unit.prepared_text)
-        chapter.source_sha256 = sha256_text(chapter.source_text)
-        chapter.normalized_sha256 = sha256_text(chapter.normalized_text)
+            if not unit.source_sha256:
+                unit.source_sha256 = sha256_text(unit.source_text)
+            if not unit.prepared_sha256:
+                unit.prepared_sha256 = sha256_text(unit.prepared_text)
+        if not chapter.source_sha256:
+            chapter.source_sha256 = sha256_text(chapter.source_text)
+        if not chapter.normalized_sha256:
+            chapter.normalized_sha256 = sha256_text(chapter.normalized_text)
         chapter.prepared_sha256 = sha256_text(chapter.prepared_text)
     book.source_sha256 = _canonical_hash(
         [
@@ -170,13 +183,23 @@ def validate_artifact(book: PreparedBook) -> None:
         raise ArtifactValidationError("Invalid prepared-book artifact: " + "; ".join(issues))
 
 
-def save_prepared_book(book: PreparedBook, path: str | Path) -> Path:
-    """Hash, validate, and atomically replace a schema-v1 JSON artifact."""
+def save_prepared_book(
+    book: PreparedBook, path: str | Path, *, validate: bool = True
+) -> Path:
+    """Hash, optionally validate, and atomically replace a schema-v1 JSON artifact.
+
+    ``validate`` runs a full :func:`validate_artifact` pass before writing.
+    Resumable callers that checkpoint after every unit pass ``validate=False``
+    to skip the whole-book re-check on each write; they validate once when the
+    run finishes, and every load re-validates, so an intermediate write is never
+    trusted unchecked.
+    """
 
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     refresh_hashes(book)
-    validate_artifact(book)
+    if validate:
+        validate_artifact(book)
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(

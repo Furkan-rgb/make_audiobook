@@ -176,8 +176,10 @@ def prepare_narration_script(options: PreparationWorkflowOptions):
     provider = _create_preparation_provider(options)
     pipeline = NarrationPreparationPipeline(provider)
 
-    def checkpoint(book: Any) -> None:
-        save_prepared_book(book, script_path)
+    def checkpoint(book: Any, *, validate: bool = False) -> None:
+        # Per-unit checkpoints skip the whole-book re-validation; the final save
+        # (validate=True) is the integrity gate for the persisted artifact.
+        save_prepared_book(book, script_path, validate=validate)
         write_prepared_markdown(book, prepared_markdown_path(script_path))
 
     # The unit count is only known once segmentation has run, which happens
@@ -201,7 +203,7 @@ def prepare_narration_script(options: PreparationWorkflowOptions):
             max_prose_units=options.preview_units,
             progress=progress,
         )
-        checkpoint(book)
+        checkpoint(book, validate=True)
     finally:
         if bar is not None:
             bar.close()
