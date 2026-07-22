@@ -25,9 +25,11 @@ from audiobook.preparation import (
     ProviderResponseError,
     ProviderUnavailableError,
     RESPONSE_JSON_SCHEMA,
+    SYSTEM_PROMPTS,
     SourceMetadata,
     ValidationPolicy,
     apply_edits,
+    build_messages,
     is_display_line,
     lexical_retention,
     load_prepared_book,
@@ -38,6 +40,7 @@ from audiobook.preparation import (
     save_prepared_book,
     segment_text,
     sentence_spans,
+    system_prompt_for,
     validate_preparation,
 )
 from audiobook.preparation.providers.ollama import DEFAULT_OLLAMA_MODEL, SAMPLING_OPTIONS
@@ -125,6 +128,46 @@ class NormalizationAndSegmentationTests(unittest.TestCase):
         self.assertGreater(len(prose), 1)
         self.assertEqual(" ".join(prose), " ".join(sentences))
         self.assertTrue(all(unit.endswith(".") for unit in prose))
+
+
+class PromptVersionTests(unittest.TestCase):
+    """The system prompt is versioned, and a request resolves through its version."""
+
+    def test_default_version_is_registered_and_is_v5(self):
+        self.assertEqual(DEFAULT_PROMPT_VERSION, "narration-preparation-v5")
+        self.assertIn(DEFAULT_PROMPT_VERSION, SYSTEM_PROMPTS)
+        self.assertIn("narration-preparation-v4", SYSTEM_PROMPTS)
+
+    def test_versions_carry_distinct_frozen_text(self):
+        v4 = system_prompt_for("narration-preparation-v4")
+        v5 = system_prompt_for("narration-preparation-v5")
+        self.assertNotEqual(v4, v5)
+        # v4 is the frozen baseline: its cautious ligature clause must survive so a
+        # rerun reproduces the scored behaviour, not a silently patched version.
+        self.assertIn("only when the correction is unambiguous", v4)
+
+    def test_v5_acts_on_the_benchmark_lessons(self):
+        v5 = system_prompt_for("narration-preparation-v5")
+        # Mechanical fixes are named, editorial brackets protected, and the old
+        # conditional that reasoning weaponised against ligatures is gone.
+        self.assertIn("ligature", v5)
+        self.assertIn("[sic]", v5)
+        self.assertNotIn("only when the correction is unambiguous", v5)
+
+    def test_build_messages_injects_the_requested_version(self):
+        for version in ("narration-preparation-v4", "narration-preparation-v5"):
+            request = PreparationRequest(
+                chapter_title="C",
+                source_text="The first line.",
+                prompt_version=version,
+            )
+            messages = build_messages(request)
+            self.assertEqual(messages[0]["content"], system_prompt_for(version))
+            self.assertIn(version, messages[1]["content"])
+
+    def test_unknown_version_raises_rather_than_falling_back(self):
+        with self.assertRaises(ValueError):
+            system_prompt_for("narration-preparation-v99")
 
 
 class ProviderBoundaryTests(unittest.TestCase):
@@ -857,9 +900,9 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(args.command, "all")
         # The configured default and the adapter's standalone fallback (used when
         # the preparation package runs without a project config) are kept in step.
-        self.assertEqual(DEFAULT_PREPARATION_MODEL, "gemma4:26b")
-        self.assertEqual(DEFAULT_OLLAMA_MODEL, "gemma4:26b")
-        self.assertEqual(args.preparation_model, "gemma4:26b")
+        self.assertEqual(DEFAULT_PREPARATION_MODEL, "gemma4:31b")
+        self.assertEqual(DEFAULT_OLLAMA_MODEL, "gemma4:31b")
+        self.assertEqual(args.preparation_model, "gemma4:31b")
         self.assertIn("Qwen3-TTS", args.tts_model)
         self.assertNotEqual(args.preparation_model, args.tts_model)
         self.assertIn("Qwen3-TTS", TTS_MODEL)

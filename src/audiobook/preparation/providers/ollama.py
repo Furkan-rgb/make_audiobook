@@ -24,7 +24,7 @@ from .base import ProviderDescriptor, ProviderResponseError, ProviderUnavailable
 
 
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-DEFAULT_OLLAMA_MODEL = "gemma4:26b"
+DEFAULT_OLLAMA_MODEL = "gemma4:31b"
 _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 # A pull moves several gigabytes over the network; the ceiling exists to catch a
 # wedged server, not to bound a slow download.

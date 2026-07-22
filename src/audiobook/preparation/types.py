@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 
 SCHEMA_VERSION = 1
-DEFAULT_PROMPT_VERSION = "narration-preparation-v4"
+DEFAULT_PROMPT_VERSION = "narration-preparation-v5"
 DEFAULT_POLICY = (
     "Adapt presentation for listening without summarizing, censoring, "
     "softening, modernizing, or otherwise changing the author's meaning."

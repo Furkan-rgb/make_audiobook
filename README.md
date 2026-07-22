@@ -93,8 +93,8 @@ preparation stage. Gemma receives grouped prose units rather than isolated
 paragraphs. Paragraph boundaries remain intact, headings and scene markers
 bypass the model, and neighboring prose is supplied only as non-output context.
 
-The default provider is local Ollama with `gemma4:26b`. Its policy explicitly
-forbids summarizing, censoring, softening, editorializing, modernizing, or adding
+The provider runs locally through Ollama. Its policy explicitly forbids
+summarizing, censoring, softening, editorializing, modernizing, or adding
 transitions. Structured responses contain:
 
 - the prepared passage;
@@ -143,9 +143,9 @@ ollama serve
 ```
 
 The preparation model is pulled automatically: preflight checks whether it is
-installed and, if not, fetches it before extraction starts. Pre-pulling it with
-`ollama pull gemma4:12b` only moves the same download earlier. What is not
-installed for you is Ollama itself — the server has to be reachable.
+installed and, if not, fetches it before extraction starts. Pre-pulling it
+yourself with `ollama pull <model>` only moves the same download earlier. What is
+not installed for you is Ollama itself — the server has to be reachable.
 
 The provider is configurable, so another Ollama model can be selected with
 `--preparation-model`; it is pulled on first use the same way. Future hosted adapters implement the same
@@ -228,11 +228,34 @@ benchmark writes a timestamped directory under `output/benchmarks/` containing:
 
 ### Example results
 
-The charts below are one real run of the full corpus across the shipped Gemma
-models and a few larger alternatives, each scored direct and with reasoning
-enabled (`+think`). The composite score is the headline: any bar in red made at
-least one **fidelity failure** — a change to a word the author wrote — and is
-ranked below every clean model regardless of how tall its bar is.
+The table and charts below are one real run of the full corpus (2026-07-22,
+provider `ollama`, prompt `narration-preparation-v4`, 48 cases × 2 repetitions,
+model-native sampling) across the shipped Gemma models and a few larger
+alternatives, each scored direct and with reasoning enabled (`+think`). Models
+are ranked by **fidelity failures** first — any unrequested change to a word the
+author wrote fails a case outright, no matter which tier it came from — and then
+by a composite of recall, precision, and exactness. The score never buys back a
+changed word with extra coverage.
+
+| Model | Score | Cases passed | Fidelity failures | Recall | Precision | Exactness | Determinism | Mean s/case |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `qwen3.6:27b` | 0.961 | 87/96 | 0 | 95.3% | 99.0% | 93.9% | 90.6% | 1.93 |
+| `gemma4:12b` | 0.939 | 86/96 | 1 | 92.9% | 99.2% | 91.1% | 92.7% | 1.14 |
+| `qwen3.6:27b +think` | 0.929 | 83/96 | 1 | 92.7% | 98.4% | 89.6% | 90.6% | 46.49 |
+| `gemma4:31b` | 0.945 | 87/96 | 2 | 95.8% | 97.9% | 94.8% | 97.9% | 2.13 |
+| `gemma4:26b +think` | 0.939 | 87/96 | 2 | 94.8% | 99.0% | 92.7% | 97.9% | 10.26 |
+| `gemma4:31b +think` | 0.934 | 85/96 | 2 | 94.8% | 99.0% | 90.6% | 97.9% | 32.08 |
+| `qwen3.6:35b +think` | 0.928 | 84/96 | 2 | 93.8% | 98.4% | 90.6% | 93.8% | 28.40 |
+| `gemma4:12b +think` | 0.898 | 80/96 | 2 | 89.6% | 99.0% | 85.4% | 97.9% | 17.27 |
+| `gemma4:26b` | 0.874 | 75/96 | 7 | 96.4% | 89.6% | 90.6% | 83.3% | 0.99 |
+| `qwen3.6:35b` | 0.794 | 67/96 | 13 | 92.7% | 81.4% | 88.5% | 51.7% | 1.87 |
+
+`qwen3.6:27b` is the only config with a clean fidelity record, and it is also
+among the fastest (1.93 s/case). The `+think` variants cost 10–46 s/case for no
+fidelity gain over their direct counterparts. Full per-`(model, case,
+repetition)` detail — every proposed edit, every flagged change, and each run's
+seed and timing — is in `benchmark.json`; the diffs behind every failure are in
+`comparison.md`.
 
 ![Composite score per model; red marks a fidelity failure](docs/images/benchmark-scores.png)
 
@@ -248,10 +271,176 @@ that, here, they do not always deliver.
 
 ![Mean seconds per case, fastest first](docs/images/benchmark-speed.png)
 
-Across all four tiers, models are ranked by **fidelity failures** first — any
-unrequested change to the author's words fails a case outright, no matter which
-tier it came from — and then by a composite of recall, precision, and exactness.
-The score never buys back a changed word with extra coverage.
+### Fidelity failures in detail
+
+The composite score treats every fidelity failure alike — a changed word is a
+changed word — but they are not equally harmful to a finished audiobook. This run
+had 32 fidelity-failing case-runs out of 960, and they fall into three very
+different kinds:
+
+1. **Deleting an editorial bracket (14 of 32, across 8 of 10 models).** In
+   `trap-005` a model asked to strip the endnote marker `[7]` also strips the
+   ` [sic]` beside a preserved eighteenth-century spelling. This is the mildest
+   kind — `[sic]` is never spoken and *publick* is a homophone of *public*, so the
+   audio is unchanged — but it is a deliberate trap: the model cannot tell a page
+   artifact (`[7]`, which should go) from a meaning-bearing bracket (`[sic]`,
+   which must stay).
+2. **Spelling out figures that already read aloud (4 of 32).** `35` →
+   `thirty-five`, `4,000` → `four thousand`, `200` → `two hundred`, `17.4` →
+   `seventeen point four`. The TTS speaks either form identically, so a listener
+   hears no difference; these are unnecessary edits, not wrong ones. Only
+   `gemma4:26b` and `qwen3.6:35b` did this.
+3. **Genuine corruption (nearly all of `qwen3.6:35b`'s failures).** Fabricated
+   text (inserting `, or tax`), deleted author clauses (dropping ` if you could
+   unroll it,`), and words mangled mid-token (`“I’m not being c` → `C`). These
+   make the book say something the author did not write. Combined with its 51.7%
+   determinism, this is the one genuinely non-viable model in the field.
+
+The count column, in other words, conflates a designed-trap miss, an
+audio-identical reformat, and real text corruption. Kinds 1 and 2 together
+account for 18 of the 32 failures; the model you would actually ship
+(`qwen3.6:27b`) had none of any kind.
+
+### Ranking with meaning-preserving reformatting reclassified
+
+Kinds 1 and 2 above — deleting `[sic]` and spelling out a figure that reads the
+same aloud — change nothing a listener hears, so they can be treated as
+*permitted* edits rather than fidelity failures. Re-scoring so those cases are no
+longer zeroed (and no longer counted against precision) gives this ranking; the
+final column is each model's fidelity-failure count under the default, strict
+scoring:
+
+| # | Model | Score | Cases passed | Fidelity failures | Was |
+|---:|---|---:|---:|---:|---:|
+| 1 | `gemma4:31b` | 0.966 | 89/96 | 0 | 2 |
+| 2 | `qwen3.6:27b` | 0.961 | 87/96 | 0 | 0 |
+| 3 | `gemma4:26b +think` | 0.959 | 89/96 | 0 | 2 |
+| 4 | `gemma4:31b +think` | 0.955 | 87/96 | 0 | 2 |
+| 5 | `qwen3.6:35b +think` | 0.948 | 86/96 | 0 | 2 |
+| 6 | `qwen3.6:27b +think` | 0.940 | 84/96 | 0 | 1 |
+| 7 | `gemma4:12b +think` | 0.919 | 82/96 | 0 | 2 |
+| 8 | `gemma4:12b` | 0.939 | 86/96 | 1 | 1 |
+| 9 | `gemma4:26b` | 0.937 | 81/96 | 1 | 7 |
+| 10 | `qwen3.6:35b` | 0.826 | 70/96 | 10 | 13 |
+
+Seven of ten configs are now clean on fidelity. `gemma4:26b` is the largest
+beneficiary — six of its seven failures were kinds 1 and 2, lifting it from 0.874
+to 0.937 — and `gemma4:31b` edges into first. The fidelity-first sort is why
+`gemma4:12b` at 0.939 still ranks below `gemma4:12b +think` at 0.919: one
+remaining fidelity failure outranks a higher score. Three genuine failures
+survive the reclassification — `gemma4:12b` rewriting a lettered-list marker
+(`; (b)` → `secondly,`), `gemma4:26b` swapping an em-dash for `, with`, and the
+ten remaining corruptions in `qwen3.6:35b`. The two strongest models are
+unchanged either way, and `+think` still does not earn its latency.
+
+This reclassification is an analysis lens, not how the benchmark scores by
+default: the shipped scorer counts both kinds as fidelity failures, on the
+principle that an unrequested edit is a risk even when this particular instance
+is harmless.
+
+### Why reasoning (`+think`) scores lower
+
+Enabling reasoning made the *strongest* models slightly worse, which is
+counter-intuitive enough to be worth explaining. The effect is not universal:
+thinking **rescued** the two weakest configs and **mildly hurt** the three best
+ones. The single knob behind both is restraint — reasoning makes a model propose
+fewer edits, pulling every model toward the ~65 a well-calibrated one makes on
+this corpus:
+
+| Base model | edits proposed, direct | with `+think` |
+|---|---:|---:|
+| `qwen3.6:27b` | 65 | 60 |
+| `gemma4:12b` | 65 | 58 |
+| `gemma4:31b` | 68 | 68 |
+| `gemma4:26b` | 88 | 67 |
+| `qwen3.6:35b` | 111 | 65 |
+
+For a model that was over-editing, that restraint is a rescue: `qwen3.6:35b`
+proposed 111 edits direct (precision 81%, 13 fidelity failures) and 65 with
+thinking (precision 98%, 2 failures). For one already well-calibrated it is a net
+loss. On `qwen3.6:27b` and `gemma4:12b`, thinking lowered recall — the count of
+required edits they missed roughly doubled — *and* added a fidelity failure,
+because the reasoning trace rationalised deleting the `[sic]` bracket it should
+have kept. `gemma4:31b` proposed the same number of edits but reworded more of
+its replacements away from the exact gold form, costing exactness.
+
+The decisive detail is *which* edits reasoning skipped: not the ambiguous ones a
+careful narrator might defensibly leave, but mechanical fixes with no judgement in
+them — ligatures (`ﬁrst` → `first`), lettered list markers, `cf.` abbreviations.
+So the recall it gave up was not bought back as fidelity; on the good models
+thinking lost on both axes while costing 10–46× the wall time. Reasoning here is
+worth enabling
+only for a model that over-edits without it — and even rescued, those models do
+not catch the best direct ones.
+
+A plausible part of the cause is our own prompt, which is written with a
+deliberate bias toward restraint — *"an empty edits list is a correct and common
+answer,"* *"repair obvious extraction artifacts only when the correction is
+unambiguous,"* and *"leave the wording alone"* when a case is ambiguous. A direct
+model pattern-matches past that caution — it sees a `ﬁ` ligature and fixes it — while
+a reasoning model weighs each clause literally, and the prompt's dominant signal
+is to prefer inaction. The edits it dropped are precisely the ones the prompt
+covers most weakly: ligatures are named only by a conditional clause with no
+example, and editorial brackets such as `[sic]` are never explicitly protected,
+so reasoning files them under removable notation. On that reading, thinking may
+score lower not because it reasons worse but because it *follows a conservative
+prompt more faithfully* — which makes this a prompt-tuning signal as much as a
+model verdict.
+
+Captured reasoning traces bear this out. Handed the ligature passage,
+`gemma4:12b +think` argues itself out of the obvious fix by invoking the prompt's
+own caution — *"If I'm unsure if a ligature is an 'obvious artifact', then it
+doesn't meet the 'unambiguous' criteria for repair. Final conclusion: Empty
+list."* — and proposes nothing, where the same model without thinking simply
+normalises it. On the `[sic]` trap it reasons its way *into* the deletion by
+filing the bracket under the very category the prompt says to make listenable —
+*"[sic] is a visual-only notation used in print… it's distracting/unnecessary as
+it doesn't convey content for the listener… Remove [sic]."* The effect is
+stochastic rather than guaranteed — in the same run `qwen3.6:27b +think` fixed
+the ligatures and kept `[sic]`, noting "the prompt doesn't explicitly say" to
+remove it — but the mechanism is visible in the words. (These traces are produced
+at run time; the adapter reads only the JSON answer and discards the reasoning,
+so they are not otherwise persisted.) Naming the mechanical fixes outright and
+protecting editorial brackets in the prompt would test the theory directly, and
+would likely narrow the gap.
+
+**Prompt lessons.** The gap between a model's direct and reasoning runs is a
+read-out on where the prompt is under-specified: wherever `+think` diverges from
+direct, the prompt left room to reason toward the wrong answer, so the fix is
+usually in the prompt rather than the model. Four concrete changes follow from the
+traces above:
+
+- **Make mechanical normalisations mandatory and named, not conditional.** Replace
+  *"repair obvious extraction artifacts only when the correction is unambiguous"*
+  with an explicit, unhedged list and examples — ligatures (`ﬁ` → `fi`,
+  `ﬂ` → `fl`), lettered or numbered enumerators that read aloud as clutter, and
+  reference abbreviations (`cf.`, `et al.`). The word *"unambiguous"* is exactly
+  what a reasoning model turns against a ligature that already is one.
+- **Protect editorial brackets by function, not by shape.** The prompt keys
+  removal off the square bracket, so reasoning lumps `[sic]` in with `[7]`. Name
+  the exception: editorial insertions — `[sic]`, `[ed.]`, `[recte …]` — are words
+  *about* the text and stay; only numeric reference markers such as `[7]` go.
+- **Separate the two kinds of restraint.** *"An empty edits list is a correct and
+  common answer"* and *"leave the wording alone"* are right for *judgement* edits
+  (is this parenthetical a citation or load-bearing prose?) and wrong for
+  *mechanical* ones (a ligature is never a judgement call). Scope the conservative
+  framing to the substantive category so it stops suppressing the clerical fixes.
+- **Pin the replacement to a minimal literal substitution.** `gemma4:31b +think`
+  kept the same edit count but reworded its replacements, costing exactness. State
+  that a replacement changes only the notation, never the wording, and is `""`
+  when the faithful edit is a removal.
+
+These four changes now ship as `narration-preparation-v5`. The prompt is
+versioned rather than overwritten — v4 is kept frozen beside it — so the two can
+be scored against the same corpus and compared directly with
+`benchmark --prompt-version`. A spot-check on the two cases from the traces above
+bears out the diagnosis: `gemma4:12b +think` scores 0.150 under v4 (0/2 passed,
+one fidelity failure — it misses the ligature *and* deletes `[sic]`) and 1.000
+under v5 (2/2, no fidelity failures — it fixes `ﬁ` → `fi` / `ﬂ` → `fl` and keeps
+`[sic]`). The remaining step is the full rerun across every model, v4 against v5,
+to confirm the `+think` recall gap closes corpus-wide and that protecting editorial
+brackets introduces no regression elsewhere — the complete test of the hypothesis
+above.
 
 Add `--think both` to score each model twice — once direct, once with reasoning
 enabled — as two separately ranked entries (`gemma4:12b` and `gemma4:12b

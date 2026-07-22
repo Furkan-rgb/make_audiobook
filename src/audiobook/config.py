@@ -25,7 +25,7 @@ DEFAULT_PREPARED_MARKDOWN_FILENAME = "prepared_book.md"
 PREPARATION_PROVIDERS = {
     "ollama": {
         "base_url": "http://127.0.0.1:11434",
-        "models": ("gemma4:26b",),
+        "models": ("gemma4:31b",),
         "auto_pull": True,
         "think": True,
     },

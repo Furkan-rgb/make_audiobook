@@ -10,6 +10,7 @@ benchmark.json, and a plots/ folder of SVG charts.
 """
 
 from audiobook.benchmarking import run
+from audiobook.preparation import DEFAULT_PROMPT_VERSION
 
 # --- settings -------------------------------------------------------------
 # Any model identifier the provider can serve. `ollama list` shows what is
@@ -47,6 +48,11 @@ QUICK = False       # True = three cases per tier, a fast smoke test
 # left empty.
 NO_THINK_MODELS = ()
 
+# System prompt every model runs under. Defaults to the current version; pin an
+# older one (e.g. "narration-preparation-v4") and run again to compare prompts,
+# since the same corpus scores whichever prompt is sent.
+PROMPT_VERSION = DEFAULT_PROMPT_VERSION
+
 # None = output/benchmarks/<timestamp>. Set a path to pin the location.
 OUTPUT_DIR = None
 # --------------------------------------------------------------------------
@@ -65,5 +71,6 @@ if __name__ == "__main__":
         case_ids=CASE_IDS,
         quick=QUICK,
         no_think_models=NO_THINK_MODELS,
+        prompt_version=PROMPT_VERSION,
         output_dir=OUTPUT_DIR,
     )

@@ -815,6 +815,28 @@ class BenchmarkRunConvenienceTests(unittest.TestCase):
             self.assertTrue(report.markdown_path.exists())
         self.assertEqual([item.model for item in report.ranked][0], "model-oracle")
 
+    def test_prompt_version_flows_to_the_provider_and_the_report(self):
+        seen = {}
+        scripts = build_scripts()
+
+        def make(_name, *, model, **configuration):
+            seen.update(configuration)
+            return ScriptedProvider(model, scripts[model], [])
+
+        with TemporaryDirectory() as temporary:
+            report = run(
+                models=("model-oracle",),
+                provider="fake",
+                output_dir=Path(temporary),
+                provider_factory=make,
+                cases=[CITATION_CASE, NOOP_CASE],
+                progress=None,
+                show_summary=False,
+                prompt_version="narration-preparation-v4",
+            )
+        self.assertEqual(seen.get("prompt_version"), "narration-preparation-v4")
+        self.assertEqual(report.prompt_version, "narration-preparation-v4")
+
     def test_default_output_dir_is_timestamped_under_benchmarks(self):
         path = default_output_dir(Path("output"))
         self.assertEqual(path.parent, Path("output") / "benchmarks")
@@ -851,6 +873,13 @@ class BenchmarkVariantTests(unittest.TestCase):
         )
         base.update(overrides)
         return BenchmarkOptions(**base)
+
+    def test_prompt_version_defaults_to_the_package_default(self):
+        self.assertEqual(self.options().prompt_version, DEFAULT_PROMPT_VERSION)
+
+    def test_unknown_prompt_version_is_rejected_before_any_model_loads(self):
+        with self.assertRaises(ValueError):
+            self.options(prompt_version="narration-preparation-v99")
 
     def test_both_modes_make_two_ranked_entries_per_model(self):
         variants = self.options(think_modes=(False, True)).variants

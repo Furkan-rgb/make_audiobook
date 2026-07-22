@@ -51,8 +51,10 @@ from .pipeline import (
 from .prompting import (
     RESPONSE_JSON_SCHEMA,
     SYSTEM_PROMPT,
+    SYSTEM_PROMPTS,
     build_messages,
     parse_structured_response,
+    system_prompt_for,
 )
 from .providers import (
     DEFAULT_OLLAMA_BASE_URL,
@@ -146,8 +148,10 @@ __all__ = [
     # Asking a model
     "RESPONSE_JSON_SCHEMA",
     "SYSTEM_PROMPT",
+    "SYSTEM_PROMPTS",
     "build_messages",
     "parse_structured_response",
+    "system_prompt_for",
     "DEFAULT_OLLAMA_BASE_URL",
     "DEFAULT_OLLAMA_MODEL",
     "SAMPLING_OPTIONS",

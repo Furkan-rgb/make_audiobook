@@ -18,6 +18,7 @@ from .benchmarking import (
     default_output_dir,
     print_summary,
 )
+from .preparation import DEFAULT_PROMPT_VERSION, SYSTEM_PROMPTS
 
 from .assembly.audio import (
     _crossfade,
@@ -246,6 +247,15 @@ def _add_benchmark_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--prompt-version",
+        choices=sorted(SYSTEM_PROMPTS),
+        default=DEFAULT_PROMPT_VERSION,
+        help=(
+            "System prompt version every model runs under (default: "
+            f"{DEFAULT_PROMPT_VERSION}). Run once per version to compare prompts."
+        ),
+    )
+    parser.add_argument(
         "--corpus-dir",
         type=Path,
         default=None,
@@ -449,6 +459,7 @@ def _benchmark_options(args: argparse.Namespace) -> BenchmarkOptions:
         quick=args.quick,
         think_modes=think_modes,
         no_think_models=no_think_models,
+        prompt_version=args.prompt_version,
     )
 
 

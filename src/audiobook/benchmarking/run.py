@@ -47,6 +47,7 @@ from ..preparation import (
     ValidationPolicy,
     apply_edits,
     create_provider,
+    system_prompt_for,
     validate_preparation,
 )
 from .corpus import BenchmarkCase, load_corpus
@@ -121,6 +122,9 @@ class BenchmarkOptions:
     # them rather than filed as forty-eight identical provider errors.
     no_think_models: tuple[str, ...] = ()
     appendix_limit: int = 8
+    # Which system prompt every model runs under. Changing it is how a run scores
+    # a new prompt version: run once per version and compare the two leaderboards.
+    prompt_version: str = DEFAULT_PROMPT_VERSION
     validation_policy: ValidationPolicy = field(default_factory=ValidationPolicy)
 
     def __post_init__(self) -> None:
@@ -144,6 +148,9 @@ class BenchmarkOptions:
             raise ValueError("Benchmark repetitions must be positive")
         if self.appendix_limit < 0:
             raise ValueError("Benchmark appendix limit cannot be negative")
+        # Fail here, not after gigabytes of weights have loaded, if the prompt
+        # version is misspelled or not one the package carries.
+        system_prompt_for(self.prompt_version)
 
     @property
     def variants(self) -> tuple["BenchmarkVariant", ...]:
@@ -333,6 +340,7 @@ def benchmark_preparation(
                 base_url=options.base_url,
                 timeout=options.timeout_seconds,
                 think=variant.think,
+                prompt_version=options.prompt_version,
             )
             provider.check_available()
         except Exception as exc:
@@ -418,7 +426,7 @@ def benchmark_preparation(
         runs=runs,
         native_sampling=native_sampling,
         seeds=seeds,
-        prompt_version=DEFAULT_PROMPT_VERSION,
+        prompt_version=options.prompt_version,
         json_path=options.output_dir / "benchmark.json",
         markdown_path=options.output_dir / "comparison.md",
     )
@@ -489,6 +497,7 @@ def run(
     case_ids: Sequence[str] = (),
     quick: bool = False,
     no_think_models: Sequence[str] = (),
+    prompt_version: str = DEFAULT_PROMPT_VERSION,
     output_dir: Path | str | None = None,
     provider_factory: ProviderFactory = create_provider,
     cases: Sequence[BenchmarkCase] | None = None,
@@ -517,6 +526,7 @@ def run(
         quick=quick,
         think_modes=tuple(think_modes),
         no_think_models=tuple(no_think_models),
+        prompt_version=prompt_version,
     )
     report = benchmark_preparation(
         options, provider_factory=provider_factory, cases=cases, progress=progress
