@@ -146,3 +146,12 @@ CHUNK_CROSSFADE_MS = 30
 PARAGRAPH_SILENCE_MS = 150
 SECTION_SILENCE_MS = 250
 CHAPTER_SILENCE_MS = 500
+
+# Final-output loudness. Chunk matching only evens out level drift between
+# independently generated chunks within a chapter; the finished audiobook is
+# then normalized once, with FFmpeg's measured two-pass EBU R128 loudnorm, so
+# every book plays back at the same predictable level. These targets apply only
+# to the final M4B, never to individual chunks.
+OUTPUT_TARGET_LUFS = -23.0
+OUTPUT_TRUE_PEAK_DBTP = -2.0
+OUTPUT_TARGET_LRA = 7.0

@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from .assembly.audio import (
     assemble_chunk_audio,
+    match_chunk_loudness,
     merge_chapters,
     verify_audio_dependencies,
     write_chapter_wav,
@@ -371,6 +372,7 @@ def narrate_chapters(
     try:
         for chapter_index, (title, chunks) in enumerate(plan):
             audio_segments: list[np.ndarray] = []
+            chapter_manifest_items: list[dict[str, Any]] = []
             for chapter_chunk_index, chunk in enumerate(
                 tqdm(chunks, desc=title, leave=False, unit="chunk")
             ):
@@ -401,10 +403,21 @@ def narrate_chapters(
                     }
                 )
                 manifest.append(item)
+                chapter_manifest_items.append(item)
                 global_chunk_index += 1
 
             if sample_rate is None:
                 continue
+            # Raw chunks are collected first, then matched together against
+            # the chapter median so every chunk sees the same reference.
+            audio_segments, loudness_diagnostics = match_chunk_loudness(
+                audio_segments,
+                sample_rate,
+            )
+            for item, chunk_diagnostics in zip(
+                chapter_manifest_items, loudness_diagnostics
+            ):
+                item.update(chunk_diagnostics.to_manifest())
             chapter_audio = assemble_chunk_audio(chunks, audio_segments, sample_rate)
             wav_name, duration_ms = write_chapter_wav(
                 temp_dir, chapter_index, chapter_audio, sample_rate
