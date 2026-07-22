@@ -30,14 +30,10 @@ from .config import (
     LANGUAGE,
     NARRATION_INSTRUCTION,
     TARGET_CHUNK_DURATION_SECONDS,
-    TTS_BACKEND,
-    VOICE_NAME,
-    VOICES_DIR,
 )
 from .extraction import parse_book_to_chapters, source_media_type
-from .synthesis.providers import create_synthesis_provider
-from .synthesis.voices import describe, resolve_voice
-from .chunking.semantic import NarrationChunk, build_chunk_plan, display_chunk_plan
+from .synthesis.providers import create_synthesis_provider, synthesis_descriptor
+from .chunking.semantic import build_chunk_plan, display_chunk_plan
 
 
 @dataclass(frozen=True)
@@ -69,7 +65,8 @@ class NarrationWorkflowOptions:
     dry_run: bool = False
     keep_temp: bool = False
     preparation_was_preview: bool = False
-    # Reference voice for the clone backend. ``None`` falls back to the
+    # Narrator voice spec — a designed voice, a recording, or a built-in
+    # speaker; the kind decides the synthesis path. ``None`` falls back to the
     # committed ACTIVE_VOICE, so the CLI keeps its existing behaviour while a
     # caller running several narrations can choose per run.
     voice: str | None = None
@@ -250,6 +247,7 @@ class _Narrator:
     """A loaded TTS voice and the metadata recorded for a narration run."""
 
     label: str
+    backend: str  # "builtin_voice" or "voice_clone", for the run manifest
     model_path: str
     instruction: str | None
     generate: Callable[[Any], tuple[np.ndarray, int]]
@@ -264,55 +262,61 @@ def _model_identity(provider: Any) -> str:
     return path or provider.describe().label
 
 
-def _load_clone_narrator(provider: Any, voice_spec: str | None = None) -> _Narrator:
-    """Lock in the reference voice for this run and precompute its clone prompt."""
+def _voice_info(provider: Any, spec: str):
+    """The catalog row *spec* names, if the backend lists it.
 
-    try:
-        voice = resolve_voice(voice_spec or ACTIVE_VOICE, voices_dir=VOICES_DIR)
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            f"{exc} Set ACTIVE_VOICE before narrating with TTS_BACKEND='voice_clone'."
-        ) from exc
-    print(describe(voice))
+    Voices without files match case-insensitively, like the model's own
+    speaker validation; file-backed specs are exact.
+    """
 
-    # Encode the reference once; every chunk reuses it for a stable narrator.
-    prompt = provider.clone(
-        ref_audio=voice.audio,
-        sample_rate=voice.sample_rate,
-        ref_text=voice.ref_text,
-    )
-    return _Narrator(
-        label=voice.slug,
-        model_path=_model_identity(provider),
-        instruction=voice.instruct,
-        generate=lambda chunk: provider.generate(text=chunk.text, language=LANGUAGE, voice=prompt),
-        close=provider.close,
-    )
+    for info in provider.voices():
+        if info.spec == spec or (info.builtin and info.spec.casefold() == spec.casefold()):
+            return info
+    return None
 
 
 def _load_narrator(tts_model: str, voice_spec: str | None = None) -> _Narrator:
-    """Build the narrator selected by ``TTS_BACKEND``.
+    """Build the narrator the chosen voice implies.
 
-    ``tts_model`` is the CustomVoice checkpoint requested on the command line; it
-    is used only by the built-in-speaker backend. The clone backend loads the
-    Base checkpoint and the requested reference clip instead.
+    How the voice is realised — native speaker, precomputed clone prompt —
+    is the backend's business behind ``load_voice``; the workflow only reads
+    the catalog row for the run manifest.  ``tts_model`` is the CustomVoice
+    checkpoint requested on the command line, honoured when the chosen voice
+    lives in that checkpoint.
     """
+
+    descriptor = synthesis_descriptor(DEFAULT_SYNTHESIS_PROVIDER)
+    if not descriptor.supports_narrate:
+        raise RuntimeError(f"The {descriptor.label} backend cannot narrate books.")
 
     provider = create_synthesis_provider(DEFAULT_SYNTHESIS_PROVIDER, custom_voice_model=tts_model)
     try:
         provider.check_available()
-        if TTS_BACKEND == "voice_clone":
-            return _load_clone_narrator(provider, voice_spec)
-        if TTS_BACKEND != "custom_voice":
-            raise ValueError(f"Unknown TTS_BACKEND: {TTS_BACKEND!r}")
+        spec = str(voice_spec or ACTIVE_VOICE)
+        try:
+            # Resolved once; every chunk reuses the handle for a stable narrator.
+            voice = provider.load_voice(spec)
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"{exc} Set ACTIVE_VOICE to a voice from the library before narrating."
+            ) from exc
+
+        info = _voice_info(provider, spec)
+        if info is not None:
+            label, kind, file_backed = info.spec, info.kind, info.file_backed
+            instruction = info.instruct if file_backed else NARRATION_INSTRUCTION
+        else:  # a recording addressed by bare path; load_voice accepted it
+            label, kind, file_backed = Path(spec).stem, "recording", True
+            instruction = None
         return _Narrator(
-            label=VOICE_NAME,
-            model_path=tts_model,
-            instruction=NARRATION_INSTRUCTION,
+            label=label,
+            backend=kind,
+            model_path=_model_identity(provider) if file_backed else tts_model,
+            instruction=instruction,
             generate=lambda chunk: provider.generate(
                 text=chunk.text,
                 language=LANGUAGE,
-                voice=VOICE_NAME,
+                voice=voice,
                 instruction=NARRATION_INSTRUCTION,
             ),
             close=provider.close,
@@ -424,7 +428,7 @@ def narrate_chapters(
     with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump(
             {
-                "tts_backend": TTS_BACKEND,
+                "tts_backend": narrator.backend,
                 "tts_model": narrator.model_path,
                 "voice": narrator.label,
                 "instruction": narrator.instruction,

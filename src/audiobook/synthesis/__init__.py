@@ -1,15 +1,5 @@
-"""Text-to-speech synthesis backends."""
+"""Text-to-speech synthesis backends.
 
-from .qwen import (
-    generate_chunk,
-    load_qwen_model,
-    verify_supported_voice,
-    verify_tts_dependencies,
-)
-
-__all__ = [
-    "generate_chunk",
-    "load_qwen_model",
-    "verify_supported_voice",
-    "verify_tts_dependencies",
-]
+All model access goes through the provider adapters in :mod:`.providers`;
+:mod:`.voices` resolves the reference clips they condition on.
+"""

@@ -546,21 +546,23 @@ The option-only form (no subcommand) is also accepted and treated as `all`:
 
 ## Custom narrator voice
 
-The narrator is chosen by `TTS_BACKEND` in `src/audiobook/config.py`:
+The narrator is chosen by `ACTIVE_VOICE` in `src/audiobook/config.py` (or the
+voice picker in the UI), and the kind of voice it names decides the synthesis
+path:
 
-- `custom_voice` — a built-in Qwen3-TTS speaker named by `VOICE_NAME`
-  (Aiden, Ryan, Serena, …) on the CustomVoice checkpoint.
-- `voice_clone` — a bespoke narrator built with the **design-then-clone**
+- **Built-in speakers** (Aiden, Ryan, Serena, …) live inside the CustomVoice
+  checkpoint; the provider lists them through the same `voices()` catalog as
+  every other voice, so they appear in the picker without any files on disk
+  and render natively at full quality.
+- **Designed voices and recordings** narrate through the **design-then-clone**
   pipeline. The VoiceDesign model renders one reference clip from a
-  natural-language description, and every book chunk is cloned from that clip so
-  the voice stays perfectly consistent across the whole book. `ACTIVE_VOICE`
-  selects which designed voice to use.
+  natural-language description (or you import a recording), and every book
+  chunk is cloned from that clip so the voice stays perfectly consistent
+  across the whole book.
 
-Designed voices live in `voices/<name>/` (a `reference.wav` plus its
-`reference.json` recipe). This repo ships `warm_male` along with the Qwen
-built-in speakers (`aiden`, `ryan`, `serena`, ...) exported as reference
-clips by `export_builtin_voices.py`, so they all appear in the voice picker
-and narrate through the same clone pipeline. To create your own:
+File-backed voices live in `voices/<name>/` (a `reference.wav` plus its
+`reference.json` recipe); a voice on disk shadows a built-in speaker of the
+same name. This repo ships `warm_male`. To create your own:
 
 ```bash
 # 1. design a voice from a description -> voices/gentle_reader/
@@ -635,7 +637,6 @@ src/audiobook/
 
 design_voice.py                   # design a narrator voice from a description
 clone_voice.py                    # preview a designed voice on sample text
-export_builtin_voices.py          # export built-in Qwen speakers to voices/
 voices/<name>/                    # reference.wav + reference.json per voice
 sample/qwen_tts_sample.py         # short built-in-speaker sample generator
 tests/                            # focused module and workflow tests

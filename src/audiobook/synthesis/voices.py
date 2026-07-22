@@ -166,6 +166,85 @@ def _sidecar_ref_text(path: Path) -> str | None:
     return None
 
 
+def _folder_voice_info(voice_dir: Path):
+    """Describe a voice folder without decoding its audio, or ``None``.
+
+    Designed voices and imported recordings share the layout — a reference
+    clip plus ``reference.json`` — and differ only in whether a persona was
+    recorded in the metadata.
+    """
+
+    from .providers.base import VoiceInfo
+
+    metadata_path = voice_dir / VOICE_REFERENCE_METADATA_FILENAME
+    audio_path = reference_audio_path(voice_dir)
+    if not metadata_path.exists() or audio_path is None:
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    instruct = metadata.get("instruct") or None
+    kind = "designed" if instruct else "recording"
+    return VoiceInfo(
+        spec=voice_dir.name,
+        label=f"{voice_dir.name}  ({kind})",
+        kind=kind,
+        audio_path=audio_path,
+        transcript_path=metadata_path,
+        ref_text=metadata.get("ref_text") or None,
+        instruct=instruct,
+        folder=True,
+    )
+
+
+def _loose_voice_info(path: Path):
+    """A recording sitting directly in the voices directory, as older versions
+    wrote them.  Still listed and still usable, so nothing anyone saved stops
+    working."""
+
+    from .providers.base import VoiceInfo
+
+    transcript_path = path.with_suffix(".txt")
+    ref_text = (
+        transcript_path.read_text(encoding="utf-8").strip() if transcript_path.exists() else None
+    )
+    return VoiceInfo(
+        spec=str(path),
+        label=f"{path.stem}  (recording)",
+        kind="recording",
+        audio_path=path,
+        transcript_path=transcript_path,
+        ref_text=ref_text or None,
+        instruct=None,
+        folder=False,
+    )
+
+
+def list_reference_voices(voices_dir: Path = VOICES_DIR) -> tuple:
+    """Every file-backed voice on disk: voice folders, then loose recordings.
+
+    Listing stays cheap — metadata reads only, no audio decoding — because
+    frontends refresh it constantly.  Backends fold this into
+    ``SynthesisProvider.voices`` alongside whatever voices they carry
+    themselves.
+    """
+
+    if not voices_dir.exists():
+        return ()
+    folders = [
+        info
+        for child in sorted(voices_dir.iterdir())
+        if child.is_dir() and (info := _folder_voice_info(child)) is not None
+    ]
+    loose = [
+        _loose_voice_info(child)
+        for child in sorted(voices_dir.iterdir())
+        if child.is_file() and child.suffix.lower() in AUDIO_SUFFIXES
+    ]
+    return tuple(folders + loose)
+
+
 def reference_audio_path(voice_dir: Path) -> Path | None:
     """The reference clip inside a voice folder, whatever it was encoded as.
 
@@ -304,6 +383,7 @@ __all__ = [
     "AUDIO_SUFFIXES",
     "ReferenceVoice",
     "describe",
+    "list_reference_voices",
     "load_reference_audio",
     "reference_audio_path",
     "resolve_voice",

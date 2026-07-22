@@ -37,18 +37,18 @@ DEFAULT_PROVIDER_TIMEOUT_SECONDS = 600.0
 # Qwen3-TTS
 TTS_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 LOCAL_TTS_MODEL_PATH = Path("models/Qwen3-TTS-12Hz-1.7B-CustomVoice")
+# Fallback built-in speaker, reported by the backend descriptor only when the
+# checkpoint's own roster cannot be read yet (i.e. before its first download).
 VOICE_NAME = "Aiden"
 LANGUAGE = "English"
 
-# Narrator backend:
-#   "custom_voice" — a built-in speaker (VOICE_NAME) on the CustomVoice model.
-#   "voice_clone"  — a bespoke narrator produced by the design-then-clone
-#                    pipeline: the VoiceDesign model synthesizes one reference
-#                    clip from VOICE_DESIGN_INSTRUCT, and every book chunk is
-#                    cloned from that clip so the voice stays consistent.
-TTS_BACKEND = "voice_clone"
+# There is no backend switch: ACTIVE_VOICE below names the narrator, and the
+# kind of voice it names decides the synthesis path.  A built-in speaker
+# renders natively on the CustomVoice checkpoint; a designed voice or a
+# recording narrates through the design-then-clone pipeline, where every book
+# chunk is cloned from one reference clip so the voice stays consistent.
 
-# Design-then-clone checkpoints (only needed when TTS_BACKEND == "voice_clone").
+# Design-then-clone checkpoints (only needed for file-backed voices).
 VOICE_DESIGN_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
 LOCAL_VOICE_DESIGN_MODEL_PATH = Path("models/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
 VOICE_CLONE_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
@@ -68,6 +68,14 @@ SYNTHESIS_PROVIDERS = {
         "voice_name": VOICE_NAME,
     },
 }
+# TODO: Select a synthesis provider per capability instead of one default for
+# everything.  Each adapter already declares what it serves (supports_design /
+# supports_clone / supports_narrate on its descriptor), and every call site
+# resolves the provider by name through the registry — so the remaining work
+# is replacing this single default with a role map, e.g.
+#     SYNTHESIS_ROLES = {"design": "qwen", "clone": "qwen", "narrate": "other"}
+# validated against each provider's declared capabilities at preflight.  That
+# would let one model design voices while another clones or narrates.
 DEFAULT_SYNTHESIS_PROVIDER = "qwen"
 
 # Natural-language persona the VoiceDesign model renders into the reference clip.
@@ -88,10 +96,12 @@ VOICE_DESIGN_INSTRUCT = (
 # clone varied cadence: a declarative, a longer subordinate clause, a comma
 # list. Aim for ~15-20 seconds of plain narration with no dialogue.
 VOICE_REFERENCE_TEXT = "At first, the village seemed quiet, almost ordinary. Then a warm breeze moved through the open window, carrying the scent of rain and wood smoke from the hills. Clara paused, listened, and smiled. Whatever waited beyond the road, she would meet it with patience, curiosity, and a steady voice."
-# Narrator voices. ACTIVE_VOICE selects the reference the clone model conditions
-# on, and accepts either form:
+# Narrator voices. ACTIVE_VOICE selects the narrator and accepts any of:
 #   "warm_male"        — a designed voice in voices/<name>/ (design_voice.py)
 #   "voices/Self.flac" — any audio file, e.g. a recording of your own voice
+#   "Aiden"            — a built-in speaker of the synthesis backend, rendered
+#                        natively rather than cloned; anything on disk with
+#                        the same name shadows it
 # A recording clones timbre on its own; to carry prosody as well, supply its
 # transcript in a sidecar <stem>.txt or via clone_voice.py --ref-text.
 VOICES_DIR = Path("voices")

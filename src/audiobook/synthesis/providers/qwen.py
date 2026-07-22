@@ -23,6 +23,7 @@ from .base import (
     SynthesisDescriptor,
     SynthesisResponseError,
     SynthesisUnavailableError,
+    VoiceInfo,
 )
 
 
@@ -77,6 +78,20 @@ class _QwenVoice:
         self.prompt = prompt
 
 
+class _QwenBuiltinVoice:
+    """A speaker baked into the CustomVoice checkpoint, addressed by name.
+
+    Which of the two handle types ``load_voice`` returns is this adapter's
+    business alone: callers pass either straight back to ``generate`` and the
+    right checkpoint and call path are chosen here.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
 class QwenSynthesisProvider:
     """Qwen3-TTS: three checkpoints, one resident at a time.
 
@@ -126,8 +141,7 @@ class QwenSynthesisProvider:
             requires_cuda=True,
             supports_design=True,
             supports_clone=True,
-            supports_builtin_voice=True,
-            builtin_voices=_builtin_speaker_roster(),
+            supports_narrate=True,
         )
 
     def check_available(self) -> None:
@@ -141,6 +155,67 @@ class QwenSynthesisProvider:
             ) from exc
         if not torch.cuda.is_available():
             raise SynthesisUnavailableError("Qwen3-TTS generation requires a CUDA GPU.")
+
+    # -- the voice catalog ----------------------------------------------
+
+    def voices(self, voices_dir: Path | None = None) -> tuple[VoiceInfo, ...]:
+        """File-backed voices on disk, then the checkpoint's built-in speakers.
+
+        Both kinds are Qwen's to know about: reference clips condition the
+        clone pipeline, built-in names address CustomVoice embeddings.  A
+        voice on disk shadows a built-in of the same name (case-insensitive)
+        so a voice someone made always wins the spec.  Cheap by design — the
+        roster comes from the checkpoint's config file, never a loaded model.
+        """
+
+        from ..voices import list_reference_voices
+
+        if voices_dir is None:
+            from ...config import VOICES_DIR
+
+            voices_dir = VOICES_DIR
+
+        file_backed = list_reference_voices(voices_dir)
+        taken = {info.spec.casefold() for info in file_backed}
+        builtins = tuple(
+            VoiceInfo(spec=name, label=f"{name}  (built-in)", kind="built-in")
+            for name in _builtin_speaker_roster()
+            if name.casefold() not in taken
+        )
+        return file_backed + builtins
+
+    def load_voice(
+        self, spec: str, *, ref_text: str | None = None
+    ) -> "_QwenVoice | _QwenBuiltinVoice":
+        """Resolve *spec* to a generate handle, whichever kind it names.
+
+        Disk is consulted first, mirroring :meth:`voices` shadowing: a voice
+        folder or recording wins over a built-in of the same name.  A
+        file-backed voice is decoded and its clone prompt precomputed once,
+        so reusing the handle keeps the narrator identical across a book.
+        """
+
+        from ...config import VOICE_REFERENCE_METADATA_FILENAME, VOICES_DIR
+        from ..voices import describe, resolve_voice
+
+        candidate = Path(spec)
+        on_disk = (
+            (VOICES_DIR / spec / VOICE_REFERENCE_METADATA_FILENAME).exists()
+            or candidate.is_file()
+            or (VOICES_DIR / candidate.name).is_file()
+        )
+        if not on_disk:
+            for name in _builtin_speaker_roster():
+                if name.casefold() == spec.casefold():
+                    return _QwenBuiltinVoice(name)
+
+        voice = resolve_voice(spec, voices_dir=VOICES_DIR, ref_text=ref_text)
+        print(describe(voice))
+        return self.clone(
+            ref_audio=voice.audio,
+            sample_rate=voice.sample_rate,
+            ref_text=voice.ref_text,
+        )
 
     # -- model residency ------------------------------------------------
 
@@ -195,10 +270,12 @@ class QwenSynthesisProvider:
         *,
         text: str,
         language: str,
-        voice: _QwenVoice | str,
+        voice: _QwenVoice | _QwenBuiltinVoice | str,
         instruction: str | None = None,
     ) -> AudioClip:
         if isinstance(voice, _QwenVoice):
+            # Delivery is carried by the reference clip; the instruction is
+            # deliberately ignored so callers can pass one unconditionally.
             model = self._model_for("clone")
             wavs, sample_rate = model.generate_voice_clone(
                 text=text,
@@ -206,12 +283,13 @@ class QwenSynthesisProvider:
                 voice_clone_prompt=voice.prompt,
             )
         else:
+            speaker = voice.name if isinstance(voice, _QwenBuiltinVoice) else voice
             model = self._model_for("custom_voice")
-            self._verify_supported_voice(model, voice)
+            self._verify_supported_voice(model, speaker)
             wavs, sample_rate = model.generate_custom_voice(
                 text=text,
                 language=language,
-                speaker=voice,
+                speaker=speaker,
                 instruct=instruction,
             )
         return AudioClip(_as_mono_float32(wavs[0]), int(sample_rate))

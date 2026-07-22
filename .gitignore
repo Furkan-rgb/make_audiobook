@@ -10,16 +10,7 @@ build/
 dist/
 *.egg-info/
 voices/*/previews/
-# Only shipped voices are tracked (warm_male plus the exported Qwen built-in
-# speakers); personal/experimental voices stay local.
+# Only the shipped default voice is tracked; personal/experimental voices stay
+# local. Built-in speakers live in the model checkpoint, not here.
 voices/*
 !voices/warm_male/
-!voices/aiden/
-!voices/dylan/
-!voices/eric/
-!voices/ono_anna/
-!voices/ryan/
-!voices/serena/
-!voices/sohee/
-!voices/uncle_fu/
-!voices/vivian/

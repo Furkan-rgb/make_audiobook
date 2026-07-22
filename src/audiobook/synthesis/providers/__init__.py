@@ -13,6 +13,7 @@ from .base import (
     SynthesisResponseError,
     SynthesisUnavailableError,
     Voice,
+    VoiceInfo,
 )
 from .qwen import QwenSynthesisProvider
 from .registry import (
@@ -36,6 +37,7 @@ __all__ = [
     "SynthesisResponseError",
     "SynthesisUnavailableError",
     "Voice",
+    "VoiceInfo",
     "available_synthesis_providers",
     "create_synthesis_provider",
     "register_synthesis_provider",

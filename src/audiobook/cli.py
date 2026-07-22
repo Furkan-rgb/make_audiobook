@@ -87,7 +87,6 @@ from .extraction.pdf import (
     clean_text_segment,
     parse_pdf_to_chapters,
 )
-from .synthesis.qwen import generate_chunk, load_qwen_model
 from .chunking.semantic import (
     NarrationChunk,
     RE_CLAUSE_BOUNDARY,

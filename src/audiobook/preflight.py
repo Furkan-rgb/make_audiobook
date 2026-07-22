@@ -26,15 +26,14 @@ from .config import (
     DEFAULT_PREPARATION_MODEL,
     DEFAULT_PREPARATION_PROVIDER,
     DEFAULT_PROVIDER_BASE_URL,
+    DEFAULT_SYNTHESIS_PROVIDER,
     LOCAL_TTS_MODEL_PATH,
     LOCAL_VOICE_CLONE_MODEL_PATH,
     LOCAL_VOICE_DESIGN_MODEL_PATH,
     REFERENCE_TRANSCRIBE,
-    TTS_BACKEND,
     TTS_MODEL,
     VOICE_CLONE_MODEL,
     VOICE_DESIGN_MODEL,
-    VOICE_REFERENCE_METADATA_FILENAME,
     VOICES_DIR,
 )
 from .synthesis.voices import AUDIO_SUFFIXES
@@ -149,39 +148,55 @@ def _check_checkpoint(name: str, local_path: Path, remote_id: str) -> CheckResul
     return CheckResult(name, OK, f"{local_path} — downloaded on this run")
 
 
+def _active_voice_info():
+    """The catalog row ACTIVE_VOICE names, or ``None`` if the backend lists
+    nothing by that spec.
+
+    Cheap by contract: ``voices()`` reads metadata files and never loads a
+    model, which is exactly what preflight is allowed to do.
+    """
+
+    from .synthesis.providers import create_synthesis_provider
+
+    spec = str(ACTIVE_VOICE)
+    for info in create_synthesis_provider(DEFAULT_SYNTHESIS_PROVIDER).voices():
+        if info.spec == spec or (info.builtin and info.spec.casefold() == spec.casefold()):
+            return info
+    return None
+
+
 def _checkpoint_checks() -> list[CheckResult]:
-    if TTS_BACKEND == "voice_clone":
-        return [
-            _check_checkpoint("clone checkpoint", LOCAL_VOICE_CLONE_MODEL_PATH, VOICE_CLONE_MODEL),
-            _check_checkpoint(
-                "design checkpoint", LOCAL_VOICE_DESIGN_MODEL_PATH, VOICE_DESIGN_MODEL
-            ),
-        ]
-    if TTS_BACKEND == "custom_voice":
+    """The checkpoints the active voice actually needs.
+
+    A voice the backend carries itself renders on the CustomVoice checkpoint;
+    a file-backed voice clones on the Base checkpoint, with the Design
+    checkpoint alongside it so new voices can be made.
+    """
+
+    info = _active_voice_info()
+    if info is not None and not info.file_backed:
         return [_check_checkpoint("TTS checkpoint", LOCAL_TTS_MODEL_PATH, TTS_MODEL)]
     return [
-        CheckResult(
-            "TTS backend",
-            FAIL,
-            f"Unknown TTS_BACKEND {TTS_BACKEND!r}; expected 'voice_clone' or 'custom_voice'.",
-        )
+        _check_checkpoint("clone checkpoint", LOCAL_VOICE_CLONE_MODEL_PATH, VOICE_CLONE_MODEL),
+        _check_checkpoint("design checkpoint", LOCAL_VOICE_DESIGN_MODEL_PATH, VOICE_DESIGN_MODEL),
     ]
 
 
 def _check_active_voice() -> CheckResult:
     """Confirm ACTIVE_VOICE points at something, without decoding it.
 
-    Mirrors the resolution order of ``resolve_voice`` but stops at existence:
-    decoding runs ffmpeg and possibly Whisper, which preflight must not.
+    The backend's catalog answers for everything it lists; the fallbacks keep
+    the two path forms working — an audio file anywhere on disk, or a bare
+    filename inside the voices directory — exactly as ``resolve_voice``
+    accepts them.
     """
 
-    if TTS_BACKEND != "voice_clone":
-        return CheckResult("narrator voice", OK, f"built-in speaker ({TTS_BACKEND})")
+    info = _active_voice_info()
+    if info is not None:
+        return CheckResult("narrator voice", OK, f"{info.kind}: {info.spec}")
 
     spec = str(ACTIVE_VOICE)
     candidate = Path(spec)
-    if (VOICES_DIR / spec / VOICE_REFERENCE_METADATA_FILENAME).exists():
-        return CheckResult("narrator voice", OK, f"designed voice {spec!r}")
     if candidate.is_file() and candidate.suffix.lower() in AUDIO_SUFFIXES:
         return CheckResult("narrator voice", OK, f"recording {spec}")
     if (VOICES_DIR / candidate.name).is_file():
@@ -189,8 +204,9 @@ def _check_active_voice() -> CheckResult:
     return CheckResult(
         "narrator voice",
         FAIL,
-        f"ACTIVE_VOICE = {spec!r} is neither a designed voice in {VOICES_DIR} "
-        "nor an audio file. Design one in the UI or with design_voice.py.",
+        f"ACTIVE_VOICE = {spec!r} names nothing in the voice library and is "
+        "not an audio file. Design one in the UI or with design_voice.py, or "
+        "pick any voice from the picker.",
     )
 
 

@@ -29,17 +29,14 @@ from ..config import (
     DEFAULT_BOOK_PATH,
     DEFAULT_PREPARATION_MODEL,
     DEFAULT_PREPARATION_PROVIDER,
-    DEFAULT_PROVIDER_BASE_URL,
     DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+    DEFAULT_SYNTHESIS_PROVIDER,
     LANGUAGE,
+    NARRATION_INSTRUCTION,
     LOCAL_TTS_MODEL_PATH,
-    LOCAL_VOICE_CLONE_MODEL_PATH,
-    LOCAL_VOICE_DESIGN_MODEL_PATH,
     REFERENCE_TRANSCRIBE,
     TTS_MODEL,
-    VOICE_CLONE_MODEL,
     VOICE_DESIGN_INSTRUCT,
-    VOICE_DESIGN_MODEL,
     VOICE_REFERENCE_AUDIO_FILENAME,
     VOICE_REFERENCE_METADATA_FILENAME,
     VOICE_REFERENCE_TEXT,
@@ -47,7 +44,7 @@ from ..config import (
 )
 from ..extraction import SUPPORTED_SOURCE_SUFFIXES
 from ..preparation import provider_descriptor, provider_descriptors
-from ..synthesis.qwen import build_voice_clone_prompt, design_reference_clip
+from ..synthesis.providers import synthesis_descriptor
 from ..synthesis.voices import describe, resolve_voice
 from ..workflow import (
     NarrationWorkflowOptions,
@@ -69,7 +66,13 @@ from .library import (
     save_transcript,
 )
 from .review import flagged_units, load_artifact, render_unit, summarize
-from .runtime import gpu_slot, load_model, loaded_model_name, stream_output, unload_model
+from .runtime import (
+    gpu_slot,
+    loaded_model_name,
+    stream_output,
+    synthesis_provider,
+    unload_model,
+)
 
 AUDITION_TEXT = (
     "By morning, the decision no longer seemed complicated. The house was "
@@ -120,18 +123,6 @@ def _end_work():
     return [gr.update(interactive=True, value=idle) for idle, _ in HEAVY_ACTIONS]
 
 
-def _design_model_path() -> str:
-    if LOCAL_VOICE_DESIGN_MODEL_PATH.exists():
-        return str(LOCAL_VOICE_DESIGN_MODEL_PATH)
-    return VOICE_DESIGN_MODEL
-
-
-def _clone_model_path() -> str:
-    if LOCAL_VOICE_CLONE_MODEL_PATH.exists():
-        return str(LOCAL_VOICE_CLONE_MODEL_PATH)
-    return VOICE_CLONE_MODEL
-
-
 def _voice_choices() -> list[tuple[str, str]]:
     return [(entry.label, entry.spec) for entry in list_voices()]
 
@@ -160,17 +151,16 @@ def _generate_design(instruct: str, ref_text: str):
 
     def work() -> dict:
         with gpu_slot():
-            model = load_model(_design_model_path())
+            provider = synthesis_provider()
             print("Designing a candidate voice...")
-            audio, sample_rate = design_reference_clip(
-                model, ref_text=ref_text, instruct=instruct, language=LANGUAGE
-            )
-        print(f"Rendered {len(audio) / sample_rate:.1f}s. Listen, then save or retry.")
+            clip = provider.design(persona=instruct, ref_text=ref_text, language=LANGUAGE)
+        print(f"Rendered {len(clip.audio) / clip.sample_rate:.1f}s. Listen, then save or retry.")
         return {
-            "audio": audio,
-            "sample_rate": int(sample_rate),
+            "audio": clip.audio,
+            "sample_rate": int(clip.sample_rate),
             "instruct": instruct,
             "ref_text": ref_text,
+            "design_model": loaded_model_name(),
         }
 
     for log, result in stream_output(work):
@@ -204,7 +194,7 @@ def _save_design(pending: dict | None, name: str):
                 "instruct": pending["instruct"],
                 "ref_text": pending["ref_text"],
                 "sample_rate": pending["sample_rate"],
-                "design_model": _design_model_path(),
+                "design_model": pending.get("design_model"),
             },
             ensure_ascii=False,
             indent=2,
@@ -284,7 +274,7 @@ def _audition_pending(pending: dict | None, transcript: str, text: str):
     if not pending:
         yield "Process a recording first.", None
         return
-    yield from _run_clone(pending["path"], transcript.strip() or None, text)
+    yield from _render_with_voice(pending["path"], transcript.strip() or None, text)
 
 
 def _save_clone(pending: dict | None, transcript: str, name: str):
@@ -307,8 +297,13 @@ def _discard_clone():
     return "Discarded.", None, "", "", None
 
 
-def _run_clone(spec: str, ref_text: str | None, text: str):
-    """Shared clone loop: yields the log, then the rendered passage."""
+def _render_with_voice(spec: str, ref_text: str | None, text: str):
+    """Shared audition loop: yields the log, then the rendered passage.
+
+    ``load_voice`` hides what the spec names — a designed clip, a recording,
+    or a speaker the backend carries itself — so auditioning exercises
+    exactly the narration path a book run would take.
+    """
 
     if not text.strip():
         yield "Enter something for the voice to read.", None
@@ -316,20 +311,13 @@ def _run_clone(spec: str, ref_text: str | None, text: str):
 
     def work() -> tuple[int, np.ndarray]:
         with gpu_slot():
-            voice = resolve_voice(spec, ref_text=ref_text, transcribe_missing=False)
-            print(describe(voice))
-            model = load_model(_clone_model_path())
-            prompt = build_voice_clone_prompt(
-                model,
-                ref_audio=voice.audio,
-                sample_rate=voice.sample_rate,
-                ref_text=voice.ref_text,
+            provider = synthesis_provider()
+            voice = provider.load_voice(spec, ref_text=ref_text)
+            print("Rendering passage...")
+            clip = provider.generate(
+                text=text, language=LANGUAGE, voice=voice, instruction=NARRATION_INSTRUCTION
             )
-            print("Cloning passage...")
-            wavs, rate = model.generate_voice_clone(
-                text=text, language=LANGUAGE, voice_clone_prompt=prompt
-            )
-        return int(rate), np.asarray(wavs[0], dtype=np.float32).reshape(-1)
+        return int(clip.sample_rate), clip.audio
 
     for log, result in stream_output(work):
         yield log, result
@@ -341,6 +329,15 @@ def _voice_detail(spec: str | None):
     entry = find_voice(spec) if spec else None
     if entry is None:
         return None, "", "Select a voice."
+
+    if entry.builtin:
+        summary = (
+            f"**{entry.spec}** — built-in speaker of the synthesis backend\n\n"
+            "Lives in the model checkpoint, so there is no reference clip or "
+            "transcript to inspect. Narration renders it natively at full "
+            "quality — audition below to hear it."
+        )
+        return None, "", summary
 
     mode = "timbre + prosody" if entry.has_transcript else "timbre only (no transcript)"
     summary = (
@@ -356,7 +353,10 @@ def _save_transcript(spec: str | None, text: str) -> str:
     entry = find_voice(spec) if spec else None
     if entry is None:
         return "Select a voice first."
-    return save_transcript(entry, text)
+    try:
+        return save_transcript(entry, text)
+    except ValueError as exc:
+        return str(exc)
 
 
 def _retranscribe(spec: str | None, current: str):
@@ -371,6 +371,10 @@ def _retranscribe(spec: str | None, current: str):
 
     if not spec:
         yield "Select a voice first.", gr.update()
+        return
+    entry = find_voice(spec)
+    if entry is not None and entry.builtin:
+        yield "Built-in speakers have no reference recording to transcribe.", gr.update()
         return
 
     def work() -> str | None:
@@ -398,13 +402,17 @@ def _retranscribe(spec: str | None, current: str):
 
 
 def _audition(spec: str | None, text: str):
-    """Clone a passage with a saved voice so it can be judged by ear."""
+    """Render a passage with a saved voice so it can be judged by ear.
+
+    Whatever kind of voice the spec names, the backend resolves it the same
+    way narration will, so what is heard here is what a book run produces.
+    """
 
     if not spec:
         yield "Select a voice first.", None
         return
-    # ref_text=None lets resolve_voice read the voice's own transcript.
-    yield from _run_clone(spec, None, text)
+    # ref_text=None lets a file-backed voice keep its own transcript.
+    yield from _render_with_voice(spec, None, text)
 
 
 def _active_voice_warning(spec: str) -> str:
@@ -422,7 +430,7 @@ def _voice_display_name(spec: str) -> str:
     """The editable part of a spec: a folder name, or a recording's stem."""
 
     entry = find_voice(spec)
-    if entry is None:
+    if entry is None or entry.builtin:
         return ""
     return entry.spec if entry.folder else Path(entry.audio_path).stem
 
@@ -496,7 +504,7 @@ def _confirm_delete(spec: str | None):
         return "Select a voice first.", gr.update(), gr.update(), gr.update(visible=False)
     try:
         message = delete_voice(entry)
-    except OSError as exc:
+    except (ValueError, OSError) as exc:
         return str(exc), gr.update(), gr.update(), gr.update(visible=False)
     return (
         f"{message}{_active_voice_warning(spec)}",
@@ -720,7 +728,14 @@ def _gpu_status() -> str:
 
 
 def build_app() -> gr.Blocks:
-    """Assemble the four-tab interface."""
+    """Assemble the four-tab interface.
+
+    Tabs follow the backend's declared capabilities: a provider that cannot
+    design, clone, or narrate simply does not show that tab, so swapping in a
+    partial backend narrows the app instead of breaking it.
+    """
+
+    capabilities = synthesis_descriptor(DEFAULT_SYNTHESIS_PROVIDER)
 
     with gr.Blocks(title="Audiobook Studio") as app:
         gr.Markdown("# Audiobook Studio")
@@ -728,7 +743,7 @@ def build_app() -> gr.Blocks:
             gpu_status = gr.Markdown(_gpu_status())
             free_gpu = gr.Button("Free GPU", scale=0)
 
-        with gr.Tab("Design a voice"):
+        with gr.Tab("Design a voice", visible=capabilities.supports_design):
             gr.Markdown(
                 "Describe a narrator and give them something to read. Generate as "
                 "many candidates as you like — nothing is kept until you save one "
@@ -752,7 +767,7 @@ def build_app() -> gr.Blocks:
             design_log = gr.Textbox(label="Log", lines=6, max_lines=16)
             design_pending = gr.State(None)
 
-        with gr.Tab("Clone a voice"):
+        with gr.Tab("Clone a voice", visible=capabilities.supports_clone):
             gr.Markdown(
                 "Clone a real voice from a recording. Aim for 15–20 seconds of "
                 "plain narration, recorded close to the microphone in a quiet "
@@ -797,7 +812,7 @@ def build_app() -> gr.Blocks:
             clone_log = gr.Textbox(label="Log", lines=6, max_lines=16)
             clone_pending = gr.State(None)
 
-        with gr.Tab("Book narration"):
+        with gr.Tab("Book narration", visible=capabilities.supports_narrate):
             gr.Markdown(
                 "Book in, audiobook out — in two steps with a review between. "
                 "Prepare adapts the text for listening; read the result before "

@@ -1,8 +1,9 @@
 """Shared plumbing for the frontend: one GPU slot, and readable progress.
 
-The pipeline was written for a terminal.  Both helpers here bridge that to a
-browser without changing it: :func:`load_model` keeps a single checkpoint
-resident because three 1.7B models do not fit alongside each other, and
+The pipeline was written for a terminal.  The helpers here bridge that to a
+browser without changing it: :func:`synthesis_provider` shares one TTS backend
+instance so a single checkpoint stays resident (three 1.7B models do not fit
+alongside each other, and the provider evicts on switch), and
 :func:`stream_output` turns the pipeline's ``print``/``tqdm`` chatter into a log
 the page can show while work is still running.
 """
@@ -17,7 +18,10 @@ import traceback
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from typing import Any, Callable, Iterator
 
-_loaded: tuple[str, Any] | None = None
+from ..config import DEFAULT_SYNTHESIS_PROVIDER
+from ..synthesis.providers import SynthesisProvider, create_synthesis_provider
+
+_provider: SynthesisProvider | None = None
 _gpu_lock = threading.Lock()
 
 
@@ -51,51 +55,39 @@ def gpu_slot():
         lock.release()
 
 
-def load_model(path: str) -> Any:
-    """Return the model at *path*, evicting whichever one is resident.
+def synthesis_provider() -> SynthesisProvider:
+    """The frontend's one long-lived TTS backend instance.
 
-    Design, clone and narration each want a different checkpoint, and switching
-    tabs should not accumulate them in VRAM.  Re-requesting the model already
-    loaded is free, which is what makes auditioning several passages quick.
+    Residency lives inside the provider — it keeps exactly one checkpoint in
+    VRAM and evicts on switch — so sharing the instance across every tab is
+    what makes repeated auditions quick and tab switches safe.  Design, clone
+    and narration each want a different checkpoint, and switching tabs must
+    not accumulate them.
     """
 
-    global _loaded
-    import torch
-    from qwen_tts import Qwen3TTSModel
-
-    if _loaded is not None and _loaded[0] == path:
-        return _loaded[1]
-
-    if _loaded is not None:
-        print(f"Unloading {_loaded[0]}...")
-        _loaded = None
-        torch.cuda.empty_cache()
-
-    print(f"Loading {path} on {torch.cuda.get_device_name(0)}...")
-    model = Qwen3TTSModel.from_pretrained(path, device_map="cuda:0", dtype=torch.bfloat16)
-    _loaded = (path, model)
-    return model
+    global _provider
+    if _provider is None:
+        _provider = create_synthesis_provider(DEFAULT_SYNTHESIS_PROVIDER)
+    return _provider
 
 
 def unload_model() -> str:
     """Drop the resident checkpoint and return a note about what happened."""
 
-    global _loaded
-    if _loaded is None:
+    name = loaded_model_name()
+    if name is None:
         return "No model is loaded."
-
-    import torch
-
-    name = _loaded[0]
-    _loaded = None
-    torch.cuda.empty_cache()
+    synthesis_provider().close()
     return f"Unloaded {name}."
 
 
 def loaded_model_name() -> str | None:
     """Name of the resident checkpoint, or ``None`` when the GPU is idle."""
 
-    return _loaded[0] if _loaded is not None else None
+    if _provider is None:
+        return None
+    resident = getattr(_provider, "resident_checkpoint", None)
+    return resident() if callable(resident) else None
 
 
 class _Tee(io.TextIOBase):
@@ -167,8 +159,8 @@ def stream_output(work: Callable[[], Any]) -> Iterator[tuple[str, Any]]:
 __all__ = [
     "gpu_lock",
     "gpu_slot",
-    "load_model",
     "loaded_model_name",
     "stream_output",
+    "synthesis_provider",
     "unload_model",
 ]
