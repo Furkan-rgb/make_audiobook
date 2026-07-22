@@ -25,24 +25,16 @@ from .config import (
     DEFAULT_PREPARED_SCRIPT_FILENAME,
     DEFAULT_PREVIEW_OUTPUT_FILENAME,
     ACTIVE_VOICE,
+    DEFAULT_SYNTHESIS_PROVIDER,
     LANGUAGE,
-    LOCAL_VOICE_CLONE_MODEL_PATH,
     NARRATION_INSTRUCTION,
     TARGET_CHUNK_DURATION_SECONDS,
     TTS_BACKEND,
-    VOICE_CLONE_MODEL,
     VOICE_NAME,
     VOICES_DIR,
 )
 from .extraction import parse_book_to_chapters, source_media_type
-from .synthesis.qwen import (
-    build_voice_clone_prompt,
-    generate_chunk,
-    generate_clone_chunk,
-    load_qwen_model,
-    verify_supported_voice,
-    verify_tts_dependencies,
-)
+from .synthesis.providers import create_synthesis_provider
 from .synthesis.voices import describe, resolve_voice
 from .chunking.semantic import NarrationChunk, build_chunk_plan, display_chunk_plan
 
@@ -261,10 +253,19 @@ class _Narrator:
     model_path: str
     instruction: str | None
     generate: Callable[[Any], tuple[np.ndarray, int]]
+    close: Callable[[], None]
 
 
-def _load_clone_narrator(voice_spec: str | None = None) -> _Narrator:
-    """Load the Base clone model and lock in the reference voice for this run."""
+def _model_identity(provider: Any) -> str:
+    """Best-effort checkpoint path for run diagnostics, or the backend label."""
+
+    resident = getattr(provider, "resident_checkpoint", None)
+    path = resident() if callable(resident) else None
+    return path or provider.describe().label
+
+
+def _load_clone_narrator(provider: Any, voice_spec: str | None = None) -> _Narrator:
+    """Lock in the reference voice for this run and precompute its clone prompt."""
 
     try:
         voice = resolve_voice(voice_spec or ACTIVE_VOICE, voices_dir=VOICES_DIR)
@@ -275,26 +276,20 @@ def _load_clone_narrator(voice_spec: str | None = None) -> _Narrator:
         ) from exc
     print(describe(voice))
 
-    model_path = str(
-        LOCAL_VOICE_CLONE_MODEL_PATH
-        if LOCAL_VOICE_CLONE_MODEL_PATH.exists()
-        else VOICE_CLONE_MODEL
-    )
-    model = load_qwen_model(model_path)
     # Encode the reference once; every chunk reuses it for a stable narrator.
-    prompt = build_voice_clone_prompt(
-        model,
+    prompt = provider.clone(
         ref_audio=voice.audio,
         sample_rate=voice.sample_rate,
         ref_text=voice.ref_text,
     )
     return _Narrator(
         label=voice.slug,
-        model_path=model_path,
+        model_path=_model_identity(provider),
         instruction=voice.instruct,
-        generate=lambda chunk: generate_clone_chunk(
-            model, chunk, voice_clone_prompt=prompt, language=LANGUAGE
+        generate=lambda chunk: provider.generate(
+            text=chunk.text, language=LANGUAGE, voice=prompt
         ),
+        close=provider.close,
     )
 
 
@@ -306,19 +301,30 @@ def _load_narrator(tts_model: str, voice_spec: str | None = None) -> _Narrator:
     Base checkpoint and the requested reference clip instead.
     """
 
-    verify_tts_dependencies()
-    if TTS_BACKEND == "voice_clone":
-        return _load_clone_narrator(voice_spec)
-    if TTS_BACKEND != "custom_voice":
-        raise ValueError(f"Unknown TTS_BACKEND: {TTS_BACKEND!r}")
-    model = load_qwen_model(tts_model)
-    verify_supported_voice(model)
-    return _Narrator(
-        label=VOICE_NAME,
-        model_path=tts_model,
-        instruction=NARRATION_INSTRUCTION,
-        generate=lambda chunk: generate_chunk(model, chunk),
+    provider = create_synthesis_provider(
+        DEFAULT_SYNTHESIS_PROVIDER, custom_voice_model=tts_model
     )
+    try:
+        provider.check_available()
+        if TTS_BACKEND == "voice_clone":
+            return _load_clone_narrator(provider, voice_spec)
+        if TTS_BACKEND != "custom_voice":
+            raise ValueError(f"Unknown TTS_BACKEND: {TTS_BACKEND!r}")
+        return _Narrator(
+            label=VOICE_NAME,
+            model_path=tts_model,
+            instruction=NARRATION_INSTRUCTION,
+            generate=lambda chunk: provider.generate(
+                text=chunk.text,
+                language=LANGUAGE,
+                voice=VOICE_NAME,
+                instruction=NARRATION_INSTRUCTION,
+            ),
+            close=provider.close,
+        )
+    except BaseException:
+        provider.close()
+        raise
 
 
 def narrate_chapters(
@@ -360,47 +366,56 @@ def narrate_chapters(
 
     total_chunks = sum(len(chunks) for _, chunks in plan)
     print(f"Generating {total_chunks} chunks with {narrator.label}...")
-    for chapter_index, (title, chunks) in enumerate(plan):
-        audio_segments: list[np.ndarray] = []
-        for chapter_chunk_index, chunk in enumerate(
-            tqdm(chunks, desc=title, leave=False, unit="chunk")
-        ):
-            audio, generated_rate = narrator.generate(chunk)
+    # Free the checkpoint's VRAM once generation is done (or fails), before the
+    # ffmpeg merge that needs none of it.
+    try:
+        for chapter_index, (title, chunks) in enumerate(plan):
+            audio_segments: list[np.ndarray] = []
+            for chapter_chunk_index, chunk in enumerate(
+                tqdm(chunks, desc=title, leave=False, unit="chunk")
+            ):
+                audio, generated_rate = narrator.generate(chunk)
+                if sample_rate is None:
+                    sample_rate = generated_rate
+                elif generated_rate != sample_rate:
+                    raise RuntimeError(
+                        "The narrator returned inconsistent sample rates."
+                    )
+
+                duration_seconds = len(audio) / generated_rate
+                audio_segments.append(audio)
+                item = asdict(chunk)
+                item.update(
+                    {
+                        "chapter": title,
+                        "chapter_index": chapter_index,
+                        "chunk_index": global_chunk_index,
+                        "chapter_chunk_index": chapter_chunk_index,
+                        "char_count": chunk.char_count,
+                        "duration_seconds": round(duration_seconds, 3),
+                        "duration_target_met": (
+                            TARGET_CHUNK_DURATION_SECONDS[0]
+                            <= duration_seconds
+                            <= TARGET_CHUNK_DURATION_SECONDS[1]
+                        ),
+                    }
+                )
+                manifest.append(item)
+                global_chunk_index += 1
+
             if sample_rate is None:
-                sample_rate = generated_rate
-            elif generated_rate != sample_rate:
-                raise RuntimeError("Qwen returned inconsistent sample rates.")
-
-            duration_seconds = len(audio) / generated_rate
-            audio_segments.append(audio)
-            item = asdict(chunk)
-            item.update(
-                {
-                    "chapter": title,
-                    "chapter_index": chapter_index,
-                    "chunk_index": global_chunk_index,
-                    "chapter_chunk_index": chapter_chunk_index,
-                    "char_count": chunk.char_count,
-                    "duration_seconds": round(duration_seconds, 3),
-                    "duration_target_met": (
-                        TARGET_CHUNK_DURATION_SECONDS[0]
-                        <= duration_seconds
-                        <= TARGET_CHUNK_DURATION_SECONDS[1]
-                    ),
-                }
+                continue
+            chapter_audio = assemble_chunk_audio(chunks, audio_segments, sample_rate)
+            wav_name, duration_ms = write_chapter_wav(
+                temp_dir, chapter_index, chapter_audio, sample_rate
             )
-            manifest.append(item)
-            global_chunk_index += 1
-
-        if sample_rate is None:
-            continue
-        chapter_audio = assemble_chunk_audio(chunks, audio_segments, sample_rate)
-        wav_name, duration_ms = write_chapter_wav(
-            temp_dir, chapter_index, chapter_audio, sample_rate
-        )
-        chapter_timings.append((title, current_time_ms, current_time_ms + duration_ms))
-        current_time_ms += duration_ms
-        wav_files.append(wav_name)
+            chapter_timings.append(
+                (title, current_time_ms, current_time_ms + duration_ms)
+            )
+            current_time_ms += duration_ms
+            wav_files.append(wav_name)
+    finally:
+        narrator.close()
 
     manifest_path = options.output_dir / "chunk_manifest.json"
     options.output_dir.mkdir(parents=True, exist_ok=True)

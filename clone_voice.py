@@ -15,17 +15,18 @@ import argparse
 from pathlib import Path
 
 import soundfile as sf
-import torch
-from qwen_tts import Qwen3TTSModel
 
 from audiobook.config import (
     ACTIVE_VOICE,
+    DEFAULT_SYNTHESIS_PROVIDER,
     LANGUAGE,
-    LOCAL_VOICE_CLONE_MODEL_PATH,
-    VOICE_CLONE_MODEL,
     VOICES_DIR,
 )
-from audiobook.synthesis.qwen import build_voice_clone_prompt
+from audiobook.synthesis.providers import (
+    SynthesisUnavailableError,
+    create_synthesis_provider,
+    synthesis_descriptor,
+)
 from audiobook.synthesis.voices import describe, resolve_voice
 
 DEFAULT_PASSAGES = [
@@ -62,11 +63,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--voices-dir", type=Path, default=VOICES_DIR)
     parser.add_argument(
         "--model",
-        default=str(
-            LOCAL_VOICE_CLONE_MODEL_PATH
-            if LOCAL_VOICE_CLONE_MODEL_PATH.exists()
-            else VOICE_CLONE_MODEL
-        ),
+        default=None,
+        help="Clone checkpoint to load; defaults to the configured backend's.",
     )
     return parser.parse_args()
 
@@ -81,41 +79,44 @@ def preview_dir_for(voice) -> Path:
 
 def main() -> None:
     args = parse_args()
-    if not torch.cuda.is_available():
-        raise SystemExit("Voice cloning requires a CUDA GPU.")
+
+    descriptor = synthesis_descriptor(DEFAULT_SYNTHESIS_PROVIDER)
+    if not descriptor.supports_clone:
+        raise SystemExit(f"The {descriptor.label} backend cannot clone voices.")
+    provider = create_synthesis_provider(
+        DEFAULT_SYNTHESIS_PROVIDER, clone_model=args.model
+    )
+    try:
+        provider.check_available()
+    except SynthesisUnavailableError as exc:
+        raise SystemExit(str(exc)) from exc
 
     try:
         voice = resolve_voice(
             args.voice, voices_dir=args.voices_dir, ref_text=args.ref_text
         )
     except FileNotFoundError as exc:
+        provider.close()
         raise SystemExit(str(exc)) from exc
     print(describe(voice))
-
-    print(f"Loading {args.model} on {torch.cuda.get_device_name(0)}...")
-    model = Qwen3TTSModel.from_pretrained(
-        args.model, device_map="cuda:0", dtype=torch.bfloat16
-    )
-    prompt = build_voice_clone_prompt(
-        model,
-        ref_audio=voice.audio,
-        sample_rate=voice.sample_rate,
-        ref_text=voice.ref_text,
-    )
 
     preview_dir = preview_dir_for(voice)
     preview_dir.mkdir(parents=True, exist_ok=True)
     passages = args.texts or DEFAULT_PASSAGES
-    for index, passage in enumerate(passages, start=1):
-        print(f"Cloning passage {index}/{len(passages)}...")
-        wavs, clone_rate = model.generate_voice_clone(
-            text=passage,
-            language=LANGUAGE,
-            voice_clone_prompt=prompt,
+    try:
+        prompt = provider.clone(
+            ref_audio=voice.audio,
+            sample_rate=voice.sample_rate,
+            ref_text=voice.ref_text,
         )
-        out_path = preview_dir / f"preview_{index}.wav"
-        sf.write(out_path, wavs[0], clone_rate)
-        print(f"  wrote {out_path}")
+        for index, passage in enumerate(passages, start=1):
+            print(f"Cloning passage {index}/{len(passages)}...")
+            clip = provider.generate(text=passage, language=LANGUAGE, voice=prompt)
+            out_path = preview_dir / f"preview_{index}.wav"
+            sf.write(out_path, clip.audio, clip.sample_rate)
+            print(f"  wrote {out_path}")
+    finally:
+        provider.close()
 
     print(f"\nPreviews for '{voice.slug}' are in {preview_dir}")
 

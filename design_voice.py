@@ -14,20 +14,21 @@ import json
 from pathlib import Path
 
 import soundfile as sf
-import torch
-from qwen_tts import Qwen3TTSModel
 
 from audiobook.config import (
+    DEFAULT_SYNTHESIS_PROVIDER,
     LANGUAGE,
-    LOCAL_VOICE_DESIGN_MODEL_PATH,
     VOICE_DESIGN_INSTRUCT,
-    VOICE_DESIGN_MODEL,
     VOICE_REFERENCE_AUDIO_FILENAME,
     VOICE_REFERENCE_METADATA_FILENAME,
     VOICE_REFERENCE_TEXT,
     VOICES_DIR,
 )
-from audiobook.synthesis.qwen import design_reference_clip
+from audiobook.synthesis.providers import (
+    SynthesisUnavailableError,
+    create_synthesis_provider,
+    synthesis_descriptor,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,11 +49,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default=str(
-            LOCAL_VOICE_DESIGN_MODEL_PATH
-            if LOCAL_VOICE_DESIGN_MODEL_PATH.exists()
-            else VOICE_DESIGN_MODEL
-        ),
+        default=None,
+        help="Design checkpoint to load; defaults to the configured backend's.",
     )
     parser.add_argument("--voices-dir", type=Path, default=VOICES_DIR)
     return parser.parse_args()
@@ -60,33 +58,40 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if not torch.cuda.is_available():
-        raise SystemExit("Voice design requires a CUDA GPU.")
 
-    print(f"Loading {args.model} on {torch.cuda.get_device_name(0)}...")
-    model = Qwen3TTSModel.from_pretrained(
-        args.model, device_map="cuda:0", dtype=torch.bfloat16
+    descriptor = synthesis_descriptor(DEFAULT_SYNTHESIS_PROVIDER)
+    if not descriptor.supports_design:
+        raise SystemExit(f"The {descriptor.label} backend cannot design voices.")
+    provider = create_synthesis_provider(
+        DEFAULT_SYNTHESIS_PROVIDER, design_model=args.model
     )
+    try:
+        provider.check_available()
+    except SynthesisUnavailableError as exc:
+        raise SystemExit(str(exc)) from exc
 
-    print(f"Designing voice '{args.name}'...")
-    audio, sample_rate = design_reference_clip(
-        model,
-        ref_text=args.ref_text,
-        instruct=args.instruct,
-        language=LANGUAGE,
-    )
+    try:
+        print(f"Designing voice '{args.name}'...")
+        clip = provider.design(
+            persona=args.instruct,
+            ref_text=args.ref_text,
+            language=LANGUAGE,
+        )
+        design_model = args.model or provider.resident_checkpoint()
+    finally:
+        provider.close()
 
     voice_dir = args.voices_dir / args.name
     voice_dir.mkdir(parents=True, exist_ok=True)
-    sf.write(voice_dir / VOICE_REFERENCE_AUDIO_FILENAME, audio, sample_rate)
+    sf.write(voice_dir / VOICE_REFERENCE_AUDIO_FILENAME, clip.audio, clip.sample_rate)
     (voice_dir / VOICE_REFERENCE_METADATA_FILENAME).write_text(
         json.dumps(
             {
                 "slug": args.name,
                 "instruct": args.instruct,
                 "ref_text": args.ref_text,
-                "sample_rate": sample_rate,
-                "design_model": args.model,
+                "sample_rate": clip.sample_rate,
+                "design_model": design_model,
             },
             ensure_ascii=False,
             indent=2,

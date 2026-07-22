@@ -55,6 +55,22 @@ LOCAL_VOICE_DESIGN_MODEL_PATH = Path("models/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
 VOICE_CLONE_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 LOCAL_VOICE_CLONE_MODEL_PATH = Path("models/Qwen3-TTS-12Hz-1.7B-Base")
 
+# TTS synthesis providers.  Mirrors PREPARATION_PROVIDERS: each backend adapter
+# reads its own entry to learn which checkpoints to load, so swapping Qwen for
+# another TTS model is a new adapter plus an entry here rather than edits across
+# the workflow.  Each role maps to (local checkpoint dir, Hugging Face id); the
+# local copy is used when present, otherwise the id is downloaded on first use.
+# The values reference the constants above so there is a single source of truth.
+SYNTHESIS_PROVIDERS = {
+    "qwen": {
+        "design": (LOCAL_VOICE_DESIGN_MODEL_PATH, VOICE_DESIGN_MODEL),
+        "clone": (LOCAL_VOICE_CLONE_MODEL_PATH, VOICE_CLONE_MODEL),
+        "custom_voice": (LOCAL_TTS_MODEL_PATH, TTS_MODEL),
+        "voice_name": VOICE_NAME,
+    },
+}
+DEFAULT_SYNTHESIS_PROVIDER = "qwen"
+
 # Natural-language persona the VoiceDesign model renders into the reference clip.
 # Voice cloning carries prosody from the reference audio, so this description
 # should capture both *who* the narrator is and *how* they read.
