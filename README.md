@@ -229,7 +229,7 @@ benchmark writes a timestamped directory under `output/benchmarks/` containing:
 ### Example results
 
 The table and charts below are one real run of the full corpus (2026-07-22,
-provider `ollama`, prompt `narration-preparation-v4`, 48 cases × 2 repetitions,
+provider `ollama`, prompt `narration-preparation-v5`, 48 cases × 2 repetitions,
 model-native sampling) across the shipped Gemma models and a few larger
 alternatives, each scored direct and with reasoning enabled (`+think`). Models
 are ranked by **fidelity failures** first — any unrequested change to a word the
@@ -239,23 +239,26 @@ changed word with extra coverage.
 
 | Model | Score | Cases passed | Fidelity failures | Recall | Precision | Exactness | Determinism | Mean s/case |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `qwen3.6:27b` | 0.961 | 87/96 | 0 | 95.3% | 99.0% | 93.9% | 90.6% | 1.93 |
-| `gemma4:12b` | 0.939 | 86/96 | 1 | 92.9% | 99.2% | 91.1% | 92.7% | 1.14 |
-| `qwen3.6:27b +think` | 0.929 | 83/96 | 1 | 92.7% | 98.4% | 89.6% | 90.6% | 46.49 |
-| `gemma4:31b` | 0.945 | 87/96 | 2 | 95.8% | 97.9% | 94.8% | 97.9% | 2.13 |
-| `gemma4:26b +think` | 0.939 | 87/96 | 2 | 94.8% | 99.0% | 92.7% | 97.9% | 10.26 |
-| `gemma4:31b +think` | 0.934 | 85/96 | 2 | 94.8% | 99.0% | 90.6% | 97.9% | 32.08 |
-| `qwen3.6:35b +think` | 0.928 | 84/96 | 2 | 93.8% | 98.4% | 90.6% | 93.8% | 28.40 |
-| `gemma4:12b +think` | 0.898 | 80/96 | 2 | 89.6% | 99.0% | 85.4% | 97.9% | 17.27 |
-| `gemma4:26b` | 0.874 | 75/96 | 7 | 96.4% | 89.6% | 90.6% | 83.3% | 0.99 |
-| `qwen3.6:35b` | 0.794 | 67/96 | 13 | 92.7% | 81.4% | 88.5% | 51.7% | 1.87 |
+| `gemma4:31b` | 0.968 | 90/96 | 0 | 95.8% | 99.0% | 95.8% | 100.0% | 2.17 |
+| `gemma4:31b +think` | 0.965 | 89/96 | 0 | 95.8% | 100.0% | 92.7% | 95.8% | 31.78 |
+| `qwen3.6:27b` | 0.957 | 87/96 | 0 | 94.8% | 99.5% | 92.4% | 88.5% | 1.87 |
+| `qwen3.6:27b +think` | 0.950 | 87/96 | 0 | 93.8% | 100.0% | 90.6% | 91.7% | 49.19 |
+| `gemma4:26b +think` | 0.948 | 86/96 | 0 | 93.8% | 100.0% | 89.6% | 93.8% | 10.73 |
+| `gemma4:12b +think` | 0.943 | 86/96 | 0 | 92.7% | 100.0% | 89.6% | 91.7% | 20.84 |
+| `qwen3.6:35b +think` | 0.935 | 85/96 | 0 | 91.7% | 100.0% | 88.5% | 89.6% | 28.97 |
+| `gemma4:12b` | 0.933 | 86/96 | 1 | 92.7% | 99.1% | 90.6% | 92.7% | 1.17 |
+| `gemma4:26b` | 0.942 | 84/96 | 2 | 97.4% | 94.8% | 92.7% | 88.9% | 0.97 |
+| `qwen3.6:35b` | 0.873 | 78/96 | 7 | 93.8% | 92.0% | 91.7% | 62.0% | 1.73 |
 
-`qwen3.6:27b` is the only config with a clean fidelity record, and it is also
-among the fastest (1.93 s/case). The `+think` variants cost 10–46 s/case for no
-fidelity gain over their direct counterparts. Full per-`(model, case,
-repetition)` detail — every proposed edit, every flagged change, and each run's
-seed and timing — is in `benchmark.json`; the diffs behind every failure are in
-`comparison.md`.
+`gemma4:31b` takes clean first place — no fidelity failures and among the fastest
+at 2.17 s/case — and **seven of ten configs are now fidelity-clean**. The `+think`
+variants cost 10–49 s/case; on the strongest models they buy no fidelity gain
+over their direct counterparts, but on the two direct configs that over-edit
+(`gemma4:26b`, `qwen3.6:35b`) their restraint clears failures the direct run
+makes — see [Why reasoning scores lower](#why-reasoning-think-scores-lower).
+Full per-`(model, case, repetition)` detail — every proposed edit, every flagged
+change, and each run's seed and timing — is in `benchmark.json`; the diffs behind
+every failure are in `comparison.md`.
 
 ![Composite score per model; red marks a fidelity failure](docs/images/benchmark-scores.png)
 
@@ -267,78 +270,88 @@ passage it disturbed (noop) or a trap it fell for.
 
 Mean wall time per case makes the price of reasoning legible: the `+think`
 variants sit far to the right, several times slower per unit for a fidelity gain
-that, here, they do not always deliver.
+that, on the strongest models, they do not deliver — those are already clean
+without it.
 
 ![Mean seconds per case, fastest first](docs/images/benchmark-speed.png)
 
 ### Fidelity failures in detail
 
 The composite score treats every fidelity failure alike — a changed word is a
-changed word — but they are not equally harmful to a finished audiobook. This run
-had 32 fidelity-failing case-runs out of 960, and they fall into three very
-different kinds:
+changed word — but they are not equally harmful to a finished audiobook. This v5
+run had **10 fidelity-failing case-runs out of 960, down from 32 under v4**, and
+the largest v4 category has vanished outright:
 
-1. **Deleting an editorial bracket (14 of 32, across 8 of 10 models).** In
-   `trap-005` a model asked to strip the endnote marker `[7]` also strips the
-   ` [sic]` beside a preserved eighteenth-century spelling. This is the mildest
-   kind — `[sic]` is never spoken and *publick* is a homophone of *public*, so the
-   audio is unchanged — but it is a deliberate trap: the model cannot tell a page
-   artifact (`[7]`, which should go) from a meaning-bearing bracket (`[sic]`,
-   which must stay).
-2. **Spelling out figures that already read aloud (4 of 32).** `35` →
-   `thirty-five`, `4,000` → `four thousand`, `200` → `two hundred`, `17.4` →
-   `seventeen point four`. The TTS speaks either form identically, so a listener
-   hears no difference; these are unnecessary edits, not wrong ones. Only
-   `gemma4:26b` and `qwen3.6:35b` did this.
-3. **Genuine corruption (nearly all of `qwen3.6:35b`'s failures).** Fabricated
-   text (inserting `, or tax`), deleted author clauses (dropping ` if you could
-   unroll it,`), and words mangled mid-token (`“I’m not being c` → `C`). These
-   make the book say something the author did not write. Combined with its 51.7%
-   determinism, this is the one genuinely non-viable model in the field.
+1. **Deleting an editorial bracket — eliminated (0, was 14 under v4).** The single
+   commonest failure under v4 was a model asked to strip the endnote marker `[7]`
+   also stripping the ` [sic]` beside a preserved eighteenth-century spelling. v5
+   names the exception — editorial insertions such as `[sic]`, `[ed.]`, `[recte …]`
+   stay while numeric markers go — and **not one model tripped it this run.** This
+   is the change the prompt lessons below were written for.
+2. **Reformatting text that already reads the same aloud (4 of 10).** `4,000` →
+   `four thousand`, `200` → `two hundred`, a `metre` → `meter` spelling swap, and
+   `recognise` → `recognize`. The TTS speaks either form identically, so a
+   listener hears no difference; these are unnecessary edits, not wrong ones.
+   `gemma4:12b` did it once, `gemma4:26b` twice, `qwen3.6:35b` once — all on the
+   same one or two passages.
+3. **Genuine corruption (6 of 10, every one `qwen3.6:35b` run direct).** Deleted
+   words (`footnote `, and a whole parenthetical `(she never forgave him for
+   it)`), "corrected" dialect the corpus marks as intentional, and words mangled
+   mid-token (`ever wr` dropped, `er` → `tud`, `e` → `i`). These make the book say
+   something the author did not write. Combined with its 62% determinism,
+   `qwen3.6:35b` run direct remains the one genuinely non-viable config in the
+   field.
 
-The count column, in other words, conflates a designed-trap miss, an
-audio-identical reformat, and real text corruption. Kinds 1 and 2 together
-account for 18 of the 32 failures; the model you would actually ship
-(`qwen3.6:27b`) had none of any kind.
+The count column still conflates an audio-identical reformat with real
+corruption — but the mildest, commonest v4 category is gone. Kinds 1 and 2 were
+18 of 32 failures under v4 and are just 4 of 10 here, all of them harmless; the
+remaining 6 are one model's corruption. The configs you would actually ship —
+`gemma4:31b`, `qwen3.6:27b`, and every `+think` variant — had no failures of any
+kind.
 
 ### Ranking with meaning-preserving reformatting reclassified
 
-Kinds 1 and 2 above — deleting `[sic]` and spelling out a figure that reads the
-same aloud — change nothing a listener hears, so they can be treated as
-*permitted* edits rather than fidelity failures. Re-scoring so those cases are no
-longer zeroed (and no longer counted against precision) gives this ranking; the
-final column is each model's fidelity-failure count under the default, strict
-scoring:
+Kind 2 above — reformatting text that reads the same aloud — changes nothing a
+listener hears, so those edits can be treated as *permitted* rather than fidelity
+failures. (Kind 1, deleting `[sic]`, no longer occurs under v5, so it drops out of
+this lens entirely.) Re-scoring so the kind-2 cases are no longer zeroed (and no
+longer counted against precision) gives this ranking; the final column is each
+model's fidelity-failure count under the default, strict scoring:
 
 | # | Model | Score | Cases passed | Fidelity failures | Was |
 |---:|---|---:|---:|---:|---:|
-| 1 | `gemma4:31b` | 0.966 | 89/96 | 0 | 2 |
-| 2 | `qwen3.6:27b` | 0.961 | 87/96 | 0 | 0 |
-| 3 | `gemma4:26b +think` | 0.959 | 89/96 | 0 | 2 |
-| 4 | `gemma4:31b +think` | 0.955 | 87/96 | 0 | 2 |
-| 5 | `qwen3.6:35b +think` | 0.948 | 86/96 | 0 | 2 |
-| 6 | `qwen3.6:27b +think` | 0.940 | 84/96 | 0 | 1 |
-| 7 | `gemma4:12b +think` | 0.919 | 82/96 | 0 | 2 |
-| 8 | `gemma4:12b` | 0.939 | 86/96 | 1 | 1 |
-| 9 | `gemma4:26b` | 0.937 | 81/96 | 1 | 7 |
-| 10 | `qwen3.6:35b` | 0.826 | 70/96 | 10 | 13 |
+| 1 | `gemma4:31b` | 0.968 | 90/96 | 0 | 0 |
+| 2 | `gemma4:31b +think` | 0.965 | 89/96 | 0 | 0 |
+| 3 | `gemma4:26b` | 0.963 | 86/96 | 0 | 2 |
+| 4 | `qwen3.6:27b` | 0.957 | 87/96 | 0 | 0 |
+| 5 | `qwen3.6:27b +think` | 0.950 | 87/96 | 0 | 0 |
+| 6 | `gemma4:26b +think` | 0.948 | 86/96 | 0 | 0 |
+| 7 | `gemma4:12b` | 0.944 | 87/96 | 0 | 1 |
+| 8 | `gemma4:12b +think` | 0.943 | 86/96 | 0 | 0 |
+| 9 | `qwen3.6:35b +think` | 0.935 | 85/96 | 0 | 0 |
+| 10 | `qwen3.6:35b` | 0.883 | 79/96 | 6 | 7 |
 
-Seven of ten configs are now clean on fidelity. `gemma4:26b` is the largest
-beneficiary — six of its seven failures were kinds 1 and 2, lifting it from 0.874
-to 0.937 — and `gemma4:31b` edges into first. The fidelity-first sort is why
-`gemma4:12b` at 0.939 still ranks below `gemma4:12b +think` at 0.919: one
-remaining fidelity failure outranks a higher score. Three genuine failures
-survive the reclassification — `gemma4:12b` rewriting a lettered-list marker
-(`; (b)` → `secondly,`), `gemma4:26b` swapping an em-dash for `, with`, and the
-ten remaining corruptions in `qwen3.6:35b`. The two strongest models are
-unchanged either way, and `+think` still does not earn its latency.
+Because v5 eliminated the `[sic]` deletions, the reclassification now touches only
+the four audio-identical reformats, so it barely moves the board. `gemma4:26b` is
+the one real beneficiary — both its failures were kind 2, lifting it from 0.942 to
+0.963 and into third — and `gemma4:12b`'s single failure clears (0.933 → 0.944).
+`qwen3.6:35b` run direct drops from seven fidelity failures to six: one of its
+seven was a spelled-out figure, the other six are genuine corruption this lens
+does not forgive. Nine of ten configs are now clean, and the two strongest were
+already clean under strict scoring, so they do not move.
 
 This reclassification is an analysis lens, not how the benchmark scores by
-default: the shipped scorer counts both kinds as fidelity failures, on the
+default: the shipped scorer counts kind 2 as a fidelity failure too, on the
 principle that an unrequested edit is a risk even when this particular instance
 is harmless.
 
 ### Why reasoning (`+think`) scores lower
+
+The run dissected in this section is the earlier **v4** prompt — the last before
+the fix it motivated. On v5 (the leaderboard above) every `+think` config is
+fidelity-clean; the edit counts, failure modes, and traces below are the v4
+diagnosis that got us there, and the prompt lessons and A/B result at the end of
+the section report how it turned out.
 
 Enabling reasoning made the *strongest* models slightly worse, which is
 counter-intuitive enough to be worth explaining. The effect is not universal:
@@ -433,14 +446,22 @@ traces above:
 These four changes now ship as `narration-preparation-v5`. The prompt is
 versioned rather than overwritten — v4 is kept frozen beside it — so the two can
 be scored against the same corpus and compared directly with
-`benchmark --prompt-version`. A spot-check on the two cases from the traces above
-bears out the diagnosis: `gemma4:12b +think` scores 0.150 under v4 (0/2 passed,
-one fidelity failure — it misses the ligature *and* deletes `[sic]`) and 1.000
-under v5 (2/2, no fidelity failures — it fixes `ﬁ` → `fi` / `ﬂ` → `fl` and keeps
-`[sic]`). The remaining step is the full rerun across every model, v4 against v5,
-to confirm the `+think` recall gap closes corpus-wide and that protecting editorial
-brackets introduces no regression elsewhere — the complete test of the hypothesis
-above.
+`benchmark --prompt-version`. The full rerun — every model, v4 against v5, same
+corpus and seeds — bears out the diagnosis corpus-wide. Fidelity failures summed
+across all ten configurations fall from **32 under v4 to 10 under v5**, and the
+count of fidelity-clean configurations rises from **one to seven**. The sharpest
+confirmation is in the reasoning runs the lessons were written for: **all five
+`+think` configurations, each of which logged one or two fidelity failures under
+v4, drop to zero under v5** — the `+think` regressions were the prompt
+over-restraining a faithful model, exactly as the traces suggested, and naming
+the mechanical fixes and the editorial-bracket exception removes them. `gemma4:31b`
+goes from 0.945 with two fidelity failures to **0.968 with none**, taking clean
+first place. The failures that remain are model behaviour rather than prompt gaps:
+`qwen3.6:35b` run direct still over-edits (thirteen fidelity failures down to
+seven, from proposing ~108 edits where the calibrated models settle near 65), and
+`gemma4:26b` run direct still trips two "reads-aloud-identically" traps
+(measurements, separated figures) — neither is something the prompt can spell
+away. Protecting the editorial brackets introduced no regression elsewhere.
 
 Add `--think both` to score each model twice — once direct, once with reasoning
 enabled — as two separately ranked entries (`gemma4:12b` and `gemma4:12b

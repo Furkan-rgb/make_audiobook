@@ -27,7 +27,7 @@ PREPARATION_PROVIDERS = {
         "base_url": "http://127.0.0.1:11434",
         "models": ("gemma4:31b",),
         "auto_pull": True,
-        "think": True,
+        "think": False,
     },
 }
 DEFAULT_PREPARATION_PROVIDER = "ollama"

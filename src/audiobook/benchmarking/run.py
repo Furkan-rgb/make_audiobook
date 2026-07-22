@@ -114,9 +114,6 @@ class BenchmarkOptions:
     categories: tuple[str, ...] = ()
     case_ids: tuple[str, ...] = ()
     quick: bool = False
-    # Each model is scored once per think mode, so ``(False, True)`` compares a
-    # model with and without reasoning as two separately ranked entries. The
-    # default keeps thinking off, which is how the pipeline runs in production.
     think_modes: tuple[bool, ...] = (False,)
     # Models the provider says cannot think, so the thinking run is skipped for
     # them rather than filed as forty-eight identical provider errors.
