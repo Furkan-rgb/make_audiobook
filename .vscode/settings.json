@@ -1,4 +1,9 @@
 {
+  // Use the project venv's ruff, not the pyenv shim on PATH: the shim errors
+  // out ("pyenv: ruff: command not found") because the global pyenv version
+  // is "system", which kills the extension's server and with it format-on-save.
+  "ruff.path": ["${workspaceFolder}/.venv/bin/ruff"],
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
   "[python]": {
     "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,

@@ -8,7 +8,7 @@ own cadence. Clips are written next to the reference.
 
     python clone_voice.py voices/Self.flac
     python clone_voice.py voices/Self.flac --ref-text "What I actually said."
-    python clone_voice.py warm_male_v2 --text "Any sentence you want to hear."
+    python clone_voice.py warm_male --text "Any sentence you want to hear."
 """
 
 import argparse
@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
         "voice",
         nargs="?",
         default=ACTIVE_VOICE,
-        help="Designed voice name (warm_male_v2) or audio file "
+        help="Designed voice name (warm_male) or audio file "
         "(voices/Self.flac). Defaults to ACTIVE_VOICE.",
     )
     parser.add_argument(

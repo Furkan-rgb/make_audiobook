@@ -41,6 +41,27 @@ def _resolve_checkpoint(spec: tuple[Path, str]) -> str:
     return str(local_path if Path(local_path).exists() else remote_id)
 
 
+def _builtin_speaker_roster() -> tuple[str, ...]:
+    """Speaker names baked into the CustomVoice checkpoint, without loading it.
+
+    The roster lives in the checkpoint's ``config.json`` under
+    ``talker_config.spk_id``, so a local copy answers from disk.  When only the
+    Hugging Face id is configured the roster is unknown until download, and the
+    single configured default is reported instead.
+    """
+
+    import json
+
+    cfg = _configured()
+    config_path = Path(cfg["custom_voice"][0]) / "config.json"
+    try:
+        talker = json.loads(config_path.read_text(encoding="utf-8"))["talker_config"]
+        roster = tuple(sorted(talker["spk_id"]))
+    except (OSError, KeyError, ValueError):
+        return (cfg["voice_name"],)
+    return roster or (cfg["voice_name"],)
+
+
 def _as_mono_float32(wav: Any) -> np.ndarray:
     """Coerce a decoded Qwen waveform into a flat float32 mono array."""
 
@@ -98,7 +119,6 @@ class QwenSynthesisProvider:
 
     @classmethod
     def describe(cls) -> SynthesisDescriptor:
-        cfg = _configured()
         return SynthesisDescriptor(
             name="qwen",
             label="Qwen3-TTS",
@@ -107,7 +127,7 @@ class QwenSynthesisProvider:
             supports_design=True,
             supports_clone=True,
             supports_builtin_voice=True,
-            builtin_voices=(cfg["voice_name"],),
+            builtin_voices=_builtin_speaker_roster(),
         )
 
     def check_available(self) -> None:

@@ -557,7 +557,10 @@ The narrator is chosen by `TTS_BACKEND` in `src/audiobook/config.py`:
   selects which designed voice to use.
 
 Designed voices live in `voices/<name>/` (a `reference.wav` plus its
-`reference.json` recipe). This repo ships `warm_male`. To create your own:
+`reference.json` recipe). This repo ships `warm_male` along with the Qwen
+built-in speakers (`aiden`, `ryan`, `serena`, ...) exported as reference
+clips by `export_builtin_voices.py`, so they all appear in the voice picker
+and narrate through the same clone pipeline. To create your own:
 
 ```bash
 # 1. design a voice from a description -> voices/gentle_reader/
@@ -632,6 +635,7 @@ src/audiobook/
 
 design_voice.py                   # design a narrator voice from a description
 clone_voice.py                    # preview a designed voice on sample text
+export_builtin_voices.py          # export built-in Qwen speakers to voices/
 voices/<name>/                    # reference.wav + reference.json per voice
 sample/qwen_tts_sample.py         # short built-in-speaker sample generator
 tests/                            # focused module and workflow tests

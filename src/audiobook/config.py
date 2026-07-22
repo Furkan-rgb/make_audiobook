@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-
 # Book and artifact locations.  The source may be any format the extraction
 # backends support (PDF or EPUB); the default is only what the CLI and UI
 # preselect when a file sits beside the project.
@@ -91,12 +90,12 @@ VOICE_DESIGN_INSTRUCT = (
 VOICE_REFERENCE_TEXT = "At first, the village seemed quiet, almost ordinary. Then a warm breeze moved through the open window, carrying the scent of rain and wood smoke from the hills. Clara paused, listened, and smiled. Whatever waited beyond the road, she would meet it with patience, curiosity, and a steady voice."
 # Narrator voices. ACTIVE_VOICE selects the reference the clone model conditions
 # on, and accepts either form:
-#   "warm_male_v2"     — a designed voice in voices/<name>/ (design_voice.py)
+#   "warm_male"        — a designed voice in voices/<name>/ (design_voice.py)
 #   "voices/Self.flac" — any audio file, e.g. a recording of your own voice
 # A recording clones timbre on its own; to carry prosody as well, supply its
 # transcript in a sidecar <stem>.txt or via clone_voice.py --ref-text.
 VOICES_DIR = Path("voices")
-ACTIVE_VOICE = "warm_male_v2"
+ACTIVE_VOICE = "warm_male"
 VOICE_REFERENCE_AUDIO_FILENAME = "reference.wav"
 VOICE_REFERENCE_METADATA_FILENAME = "reference.json"
 # Every reference is decoded to mono at this rate and scaled to this peak before

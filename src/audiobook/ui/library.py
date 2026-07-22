@@ -47,9 +47,10 @@ class VoiceEntry:
 def _folder_voice(voice_dir: Path) -> VoiceEntry | None:
     """Read a voice folder — the layout every voice is written in.
 
-    Designed voices and imported recordings share it: a reference clip and a
-    ``reference.json`` beside it.  What distinguishes them is the persona the
-    designed one was rendered from, which a recording has no equivalent of.
+    Designed voices, exported built-in speakers and imported recordings share
+    it: a reference clip and a ``reference.json`` beside it.  What distinguishes
+    them is provenance metadata — the persona a designed voice was rendered
+    from, or the checkpoint speaker a built-in was exported from.
     """
 
     metadata_path = voice_dir / VOICE_REFERENCE_METADATA_FILENAME
@@ -61,9 +62,15 @@ def _folder_voice(voice_dir: Path) -> VoiceEntry | None:
     except json.JSONDecodeError:
         return None
     instruct = metadata.get("instruct") or None
+    if instruct:
+        kind = "designed"
+    elif metadata.get("builtin_speaker"):
+        kind = "built-in"
+    else:
+        kind = "recording"
     return VoiceEntry(
         spec=voice_dir.name,
-        label=f"{voice_dir.name}  ({'designed' if instruct else 'recording'})",
+        label=f"{voice_dir.name}  ({kind})",
         audio_path=audio_path,
         transcript_path=metadata_path,
         ref_text=metadata.get("ref_text") or None,

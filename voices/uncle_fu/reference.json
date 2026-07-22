@@ -1,0 +1,9 @@
+{
+  "slug": "uncle_fu",
+  "builtin_speaker": "uncle_fu",
+  "instruct": null,
+  "ref_text": "At first, the village seemed quiet, almost ordinary. Then a warm breeze moved through the open window, carrying the scent of rain and wood smoke from the hills. Clara paused, listened, and smiled. Whatever waited beyond the road, she would meet it with patience, curiosity, and a steady voice.",
+  "sample_rate": 24000,
+  "custom_voice_model": "models/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+  "generation_instruction": "Warm, engaging professional audiobook narration. Read naturally and clearly at a relaxed pace, with expressive phrasing and emotion appropriate to the text. Maintain smooth continuity, use natural pauses and vary tone gently to keep the listening experience pleasant and immersive. Give dialogue subtle character distinction without exaggerated acting. Avoid monotony, rushed delivery and overly long pauses."
+}
